@@ -21,6 +21,10 @@ struct Args {
     #[arg(short, long)]
     output: Option<PathBuf>,
 
+    /// Write to stdout instead of file
+    #[arg(long)]
+    stdout: bool,
+
     /// Color format
     #[arg(short = 'f', long, value_enum, default_value = "auto")]
     format: ColorFormat,
@@ -49,12 +53,20 @@ enum ColorFormat {
 fn main() -> Result<()> {
     let args = Args::parse();
 
-    let output = args.output.unwrap_or_else(|| {
-        args.input.with_extension("c")
-    });
+    if args.stdout && args.output.is_some() {
+        anyhow::bail!("Cannot use both --stdout and --output");
+    }
 
-    if output.exists() && !args.overwrite {
-        anyhow::bail!("Output file exists. Use --overwrite to replace it.");
+    let output = if !args.stdout {
+        Some(args.output.unwrap_or_else(|| args.input.with_extension("c")))
+    } else {
+        None
+    };
+
+    if let Some(ref path) = output {
+        if path.exists() && !args.overwrite {
+            anyhow::bail!("Output file exists. Use --overwrite to replace it.");
+        }
     }
 
     let img = image::open(&args.input)
@@ -66,18 +78,26 @@ fn main() -> Result<()> {
     };
 
     let var_name = output
-        .file_stem()
+        .as_ref()
+        .and_then(|p| p.file_stem())
+        .or_else(|| args.input.file_stem())
         .and_then(|s| s.to_str())
         .unwrap_or("image")
         .replace('-', "_");
 
-    generate_c_file(&img, &output, &var_name, &format)?;
-
-    println!("✓ {}x{} → {} ({})", 
-        img.width(), img.height(), 
-        output.display(),
-        format_name(&format)
-    );
+    if args.stdout {
+        let stdout = std::io::stdout();
+        let mut handle = stdout.lock();
+        generate_c(&img, &mut handle, &var_name, &format)?;
+    } else {
+        let mut file = File::create(output.as_ref().unwrap())?;
+        generate_c(&img, &mut file, &var_name, &format)?;
+        println!("✓ {}x{} → {} ({})", 
+            img.width(), img.height(), 
+            output.unwrap().display(),
+            format_name(&format)
+        );
+    }
 
     Ok(())
 }
@@ -107,58 +127,56 @@ fn format_name(format: &ColorFormat) -> &str {
     }
 }
 
-fn generate_c_file(img: &DynamicImage, output: &Path, var_name: &str, format: &ColorFormat) -> Result<()> {
-    let mut file = File::create(output)?;
-    
-    write_header(&mut file, var_name)?;
+fn generate_c<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, format: &ColorFormat) -> Result<()> {
+    write_header(writer, var_name)?;
     
     match format {
-        ColorFormat::Indexed4 => write_indexed4(img, &mut file, var_name)?,
-        ColorFormat::Indexed8 => write_indexed8(img, &mut file, var_name)?,
-        ColorFormat::TrueColor => write_true_color(img, &mut file, var_name, false)?,
-        ColorFormat::TrueColorAlpha => write_true_color(img, &mut file, var_name, true)?,
-        ColorFormat::Alpha8 => write_alpha8(img, &mut file, var_name)?,
+        ColorFormat::Indexed4 => write_indexed4(img, writer, var_name)?,
+        ColorFormat::Indexed8 => write_indexed8(img, writer, var_name)?,
+        ColorFormat::TrueColor => write_true_color(img, writer, var_name, false)?,
+        ColorFormat::TrueColorAlpha => write_true_color(img, writer, var_name, true)?,
+        ColorFormat::Alpha8 => write_alpha8(img, writer, var_name)?,
         _ => anyhow::bail!("Format not yet implemented"),
     }
     
     Ok(())
 }
 
-fn write_header(file: &mut File, var_name: &str) -> Result<()> {
-    writeln!(file, "#ifdef __has_include")?;
-    writeln!(file, "    #if __has_include(\"lvgl.h\")")?;
-    writeln!(file, "        #ifndef LV_LVGL_H_INCLUDE_SIMPLE")?;
-    writeln!(file, "            #define LV_LVGL_H_INCLUDE_SIMPLE")?;
-    writeln!(file, "        #endif")?;
-    writeln!(file, "    #endif")?;
-    writeln!(file, "#endif\n")?;
-    writeln!(file, "#if defined(LV_LVGL_H_INCLUDE_SIMPLE)")?;
-    writeln!(file, "    #include \"lvgl.h\"")?;
-    writeln!(file, "#else")?;
-    writeln!(file, "    #include \"lvgl/lvgl.h\"")?;
-    writeln!(file, "#endif\n")?;
-    writeln!(file, "#ifndef LV_ATTRIBUTE_MEM_ALIGN")?;
-    writeln!(file, "#define LV_ATTRIBUTE_MEM_ALIGN")?;
-    writeln!(file, "#endif\n")?;
-    writeln!(file, "#ifndef LV_ATTRIBUTE_IMG_{}", var_name.to_uppercase())?;
-    writeln!(file, "#define LV_ATTRIBUTE_IMG_{}", var_name.to_uppercase())?;
-    writeln!(file, "#endif\n")?;
+fn write_header<W: Write>(writer: &mut W, var_name: &str) -> Result<()> {
+    writeln!(writer, "#ifdef __has_include")?;
+    writeln!(writer, "    #if __has_include(\"lvgl.h\")")?;
+    writeln!(writer, "        #ifndef LV_LVGL_H_INCLUDE_SIMPLE")?;
+    writeln!(writer, "            #define LV_LVGL_H_INCLUDE_SIMPLE")?;
+    writeln!(writer, "        #endif")?;
+    writeln!(writer, "    #endif")?;
+    writeln!(writer, "#endif\n")?;
+    writeln!(writer, "#if defined(LV_LVGL_H_INCLUDE_SIMPLE)")?;
+    writeln!(writer, "    #include \"lvgl.h\"")?;
+    writeln!(writer, "#else")?;
+    writeln!(writer, "    #include \"lvgl/lvgl.h\"")?;
+    writeln!(writer, "#endif\n")?;
+    writeln!(writer, "#ifndef LV_ATTRIBUTE_MEM_ALIGN")?;
+    writeln!(writer, "#define LV_ATTRIBUTE_MEM_ALIGN")?;
+    writeln!(writer, "#endif\n")?;
+    writeln!(writer, "#ifndef LV_ATTRIBUTE_IMG_{}", var_name.to_uppercase())?;
+    writeln!(writer, "#define LV_ATTRIBUTE_IMG_{}", var_name.to_uppercase())?;
+    writeln!(writer, "#endif\n")?;
     Ok(())
 }
 
-fn write_indexed4(img: &DynamicImage, file: &mut File, var_name: &str) -> Result<()> {
+fn write_indexed4<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     
-    writeln!(file, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
+    writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
     
     // Palette (16 grayscale levels)
     for i in 0..16 {
         let v = (i * 255 / 15) as u8;
-        writeln!(file, "  0x{:02x}, 0x{:02x}, 0x{:02x}, 0xff, \t/*Color of index {}*/", v, v, v, i)?;
+        writeln!(writer, "  0x{:02x}, 0x{:02x}, 0x{:02x}, 0xff, \t/*Color of index {}*/", v, v, v, i)?;
     }
-    writeln!(file)?;
+    writeln!(writer)?;
     
     // Pixel data (2 pixels per byte)
     let mut data = Vec::new();
@@ -170,39 +188,39 @@ fn write_indexed4(img: &DynamicImage, file: &mut File, var_name: &str) -> Result
         }
     }
     
-    write_data_array(file, &data)?;
-    writeln!(file, "}};\n")?;
+    write_data_array(writer, &data)?;
+    writeln!(writer, "}};\n")?;
     
-    write_descriptor(file, var_name, w, h, "LV_IMG_CF_INDEXED_4BIT", data.len())?;
+    write_descriptor(writer, var_name, w, h, "LV_IMG_CF_INDEXED_4BIT", data.len())?;
     Ok(())
 }
 
-fn write_indexed8(img: &DynamicImage, file: &mut File, var_name: &str) -> Result<()> {
+fn write_indexed8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     
-    writeln!(file, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
+    writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
     
     // Palette (256 grayscale levels)
     for i in 0..256 {
-        writeln!(file, "  0x{:02x}, 0x{:02x}, 0x{:02x}, 0xff, \t/*Color of index {}*/", i, i, i, i)?;
+        writeln!(writer, "  0x{:02x}, 0x{:02x}, 0x{:02x}, 0xff, \t/*Color of index {}*/", i, i, i, i)?;
     }
-    writeln!(file)?;
+    writeln!(writer)?;
     
     let data: Vec<u8> = gray.pixels().map(|p| p[0]).collect();
-    write_data_array(file, &data)?;
-    writeln!(file, "}};\n")?;
+    write_data_array(writer, &data)?;
+    writeln!(writer, "}};\n")?;
     
-    write_descriptor(file, var_name, w, h, "LV_IMG_CF_INDEXED_8BIT", data.len())?;
+    write_descriptor(writer, var_name, w, h, "LV_IMG_CF_INDEXED_8BIT", data.len())?;
     Ok(())
 }
 
-fn write_true_color(img: &DynamicImage, file: &mut File, var_name: &str, alpha: bool) -> Result<()> {
+fn write_true_color<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, alpha: bool) -> Result<()> {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
     
-    writeln!(file, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
+    writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
     
     let mut data = Vec::new();
@@ -217,52 +235,52 @@ fn write_true_color(img: &DynamicImage, file: &mut File, var_name: &str, alpha: 
         }
     }
     
-    write_data_array(file, &data)?;
-    writeln!(file, "}};\n")?;
+    write_data_array(writer, &data)?;
+    writeln!(writer, "}};\n")?;
     
     let cf = if alpha { "LV_IMG_CF_TRUE_COLOR_ALPHA" } else { "LV_IMG_CF_TRUE_COLOR" };
-    write_descriptor(file, var_name, w, h, cf, data.len())?;
+    write_descriptor(writer, var_name, w, h, cf, data.len())?;
     Ok(())
 }
 
-fn write_alpha8(img: &DynamicImage, file: &mut File, var_name: &str) -> Result<()> {
+fn write_alpha8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     
-    writeln!(file, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
+    writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
     
     let data: Vec<u8> = gray.pixels().map(|p| p[0]).collect();
-    write_data_array(file, &data)?;
-    writeln!(file, "}};\n")?;
+    write_data_array(writer, &data)?;
+    writeln!(writer, "}};\n")?;
     
-    write_descriptor(file, var_name, w, h, "LV_IMG_CF_ALPHA_8BIT", data.len())?;
+    write_descriptor(writer, var_name, w, h, "LV_IMG_CF_ALPHA_8BIT", data.len())?;
     Ok(())
 }
 
-fn write_data_array(file: &mut File, data: &[u8]) -> Result<()> {
+fn write_data_array<W: Write>(writer: &mut W, data: &[u8]) -> Result<()> {
     for (i, chunk) in data.chunks(16).enumerate() {
-        if i > 0 { writeln!(file)?; }
-        write!(file, "  ")?;
+        if i > 0 { writeln!(writer)?; }
+        write!(writer, "  ")?;
         for (j, byte) in chunk.iter().enumerate() {
-            if j > 0 { write!(file, ", ")?; }
-            write!(file, "0x{:02x}", byte)?;
+            if j > 0 { write!(writer, ", ")?; }
+            write!(writer, "0x{:02x}", byte)?;
         }
-        write!(file, ",")?;
+        write!(writer, ",")?;
     }
-    writeln!(file)?;
+    writeln!(writer)?;
     Ok(())
 }
 
-fn write_descriptor(file: &mut File, var_name: &str, w: u32, h: u32, cf: &str, size: usize) -> Result<()> {
-    writeln!(file, "const lv_img_dsc_t {} = {{", var_name)?;
-    writeln!(file, "  .header.cf = {},", cf)?;
-    writeln!(file, "  .header.always_zero = 0,")?;
-    writeln!(file, "  .header.reserved = 0,")?;
-    writeln!(file, "  .header.w = {},", w)?;
-    writeln!(file, "  .header.h = {},", h)?;
-    writeln!(file, "  .data_size = {},", size)?;
-    writeln!(file, "  .data = {}_map,", var_name)?;
-    writeln!(file, "}};")?;
+fn write_descriptor<W: Write>(writer: &mut W, var_name: &str, w: u32, h: u32, cf: &str, size: usize) -> Result<()> {
+    writeln!(writer, "const lv_img_dsc_t {} = {{", var_name)?;
+    writeln!(writer, "  .header.cf = {},", cf)?;
+    writeln!(writer, "  .header.always_zero = 0,")?;
+    writeln!(writer, "  .header.reserved = 0,")?;
+    writeln!(writer, "  .header.w = {},", w)?;
+    writeln!(writer, "  .header.h = {},", h)?;
+    writeln!(writer, "  .data_size = {},", size)?;
+    writeln!(writer, "  .data = {}_map,", var_name)?;
+    writeln!(writer, "}};")?;
     Ok(())
 }
