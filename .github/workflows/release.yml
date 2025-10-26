@@ -1,0 +1,187 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release version (e.g., v0.1.0)'
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Create archive
+        shell: bash
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            VERSION=${{ inputs.tag }}
+            VERSION=${VERSION#v}
+          else
+            VERSION=${GITHUB_REF#refs/tags/v}
+          fi
+          BIN_NAME=png2lvgl
+          
+          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
+            ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.zip"
+            cp target/${{ matrix.target }}/release/${BIN_NAME}.exe .
+            7z a "$ARCHIVE" ${BIN_NAME}.exe README.md LICENSE
+          else
+            ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.tar.gz"
+            cp target/${{ matrix.target }}/release/${BIN_NAME} .
+            chmod +x ${BIN_NAME}
+            tar czf "$ARCHIVE" ${BIN_NAME} README.md LICENSE
+          fi
+          
+          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Determine version and pre-release status
+        id: version
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            TAG=${{ inputs.tag }}
+          else
+            TAG=${GITHUB_REF#refs/tags/}
+          fi
+          VERSION=${TAG#v}
+          
+          # Check if pre-release (contains -, alpha, beta, rc)
+          if [[ "$VERSION" =~ (alpha|beta|rc|-) ]]; then
+            IS_PRERELEASE=true
+          else
+            IS_PRERELEASE=false
+          fi
+          
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+
+      - name: Create tag if manual trigger
+        if: inputs.tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag ${{ steps.version.outputs.tag }}
+          git push origin ${{ steps.version.outputs.tag }}
+
+      - uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir release-assets
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
+
+      - name: Calculate checksums
+        id: checksums
+        run: |
+          cd release-assets
+          VERSION=${{ steps.version.outputs.version }}
+          
+          X64_SHA=$(sha256sum png2lvgl-${VERSION}-x86_64-apple-darwin.tar.gz | cut -d' ' -f1)
+          ARM64_SHA=$(sha256sum png2lvgl-${VERSION}-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)
+          
+          echo "x64_sha=${X64_SHA}" >> $GITHUB_OUTPUT
+          echo "arm64_sha=${ARM64_SHA}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          files: release-assets/*
+          generate_release_notes: true
+          prerelease: ${{ steps.version.outputs.is_prerelease == 'true' }}
+
+      - name: Update Homebrew tap
+        if: steps.version.outputs.is_prerelease == 'false'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION=${{ steps.checksums.outputs.version }}
+          X64_SHA=${{ steps.checksums.outputs.x64_sha }}
+          ARM64_SHA=${{ steps.checksums.outputs.arm64_sha }}
+          
+          git clone https://x-access-token:${TAP_TOKEN}@github.com/metaneutrons/homebrew-tap.git
+          cd homebrew-tap
+          
+          cat > Formula/png2lvgl.rb << EOF
+          class Png2lvgl < Formula
+            desc "Convert PNG images to LVGL C arrays"
+            homepage "https://github.com/metaneutrons/png2lvgl"
+            version "${VERSION}"
+            license "GPL-3.0"
+
+            on_macos do
+              if Hardware::CPU.intel?
+                url "https://github.com/metaneutrons/png2lvgl/releases/download/v${VERSION}/png2lvgl-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${X64_SHA}"
+              else
+                url "https://github.com/metaneutrons/png2lvgl/releases/download/v${VERSION}/png2lvgl-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM64_SHA}"
+              end
+            end
+
+            def install
+              bin.install "png2lvgl"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/png2lvgl --version")
+            end
+          end
+          EOF
+          
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/png2lvgl.rb
+          git commit -m "Update png2lvgl to ${VERSION}"
+          git push
