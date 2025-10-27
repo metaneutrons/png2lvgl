@@ -152,6 +152,7 @@ jobs:
           
           git clone https://x-access-token:${TAP_TOKEN}@github.com/metaneutrons/homebrew-tap.git
           cd homebrew-tap
+          mkdir -p Formula
           
           cat > Formula/png2lvgl.rb << EOF
           class Png2lvgl < Formula
