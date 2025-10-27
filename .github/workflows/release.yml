@@ -220,9 +220,8 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: [version, build, release]
+    needs: [build, release]
     runs-on: ubuntu-latest
-    if: needs.version.outputs.is_prerelease == 'false'
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
