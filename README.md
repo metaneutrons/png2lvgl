@@ -26,6 +26,10 @@ brew tap metaneutrons/tap
 brew install png2lvgl
 ```
 
+### Pre-built Binaries
+
+Download the latest release for your platform from [GitHub Releases](https://github.com/metaneutrons/png2lvgl/releases).
+
 ### From Source
 
 ```bash
