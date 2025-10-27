@@ -65,7 +65,9 @@ jobs:
             ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.tar.gz"
             cp target/${{ matrix.target }}/release/${BIN_NAME} .
             chmod +x ${BIN_NAME}
-            tar czf "$ARCHIVE" ${BIN_NAME} README.md LICENSE
+            mkdir -p share/man/man1
+            cp docs/png2lvgl.1 share/man/man1/
+            tar czf "$ARCHIVE" ${BIN_NAME} README.md LICENSE share/
           fi
           
           echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
