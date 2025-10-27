@@ -1,8 +1,8 @@
 # png2lvgl
 
+[![CI](https://github.com/metaneutrons/png2lvgl/workflows/CI/badge.svg)](https://github.com/metaneutrons/png2lvgl/actions/workflows/ci.yml)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
-[![Rust](https://img.shields.io/badge/rust-1.90%2B-orange.svg)](https://www.rust-lang.org/)
-[![Build Status](https://github.com/metaneutrons/png2lvgl/workflows/CI/badge.svg)](https://github.com/metaneutrons/png2lvgl/actions)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-orange.svg)](https://www.rust-lang.org/)
 
 Convert PNG images to LVGL C arrays with support for multiple color formats.
 

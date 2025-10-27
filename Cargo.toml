@@ -2,10 +2,16 @@
 name = "png2lvgl"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.70"
 authors = ["metaneturons"]
 license = "GPL-3.0"
 description = "Convert PNG images to LVGL C arrays"
 repository = "https://github.com/metaneturons/png2lvgl"
+homepage = "https://github.com/metaneutrons/png2lvgl"
+documentation = "https://github.com/metaneutrons/png2lvgl"
+readme = "README.md"
+keywords = ["lvgl", "embedded", "graphics", "image", "converter"]
+categories = ["command-line-utilities", "embedded", "graphics"]
 
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
