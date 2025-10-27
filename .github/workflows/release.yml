@@ -77,8 +77,36 @@ jobs:
           name: ${{ matrix.target }}
           path: ${{ env.ARCHIVE }}
 
+  debian-packages:
+    name: Build Debian Package (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - x86_64-unknown-linux-musl
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - run: cargo install cargo-deb
+      - name: Build deb package
+        run: |
+          cargo build --release --target ${{ matrix.target }}
+          cargo deb --target ${{ matrix.target }} --no-build
+          
+          # Find and rename the deb file for clarity
+          DEB_FILE=$(ls target/${{ matrix.target }}/debian/*.deb)
+          cp "$DEB_FILE" .
+          
+      - uses: actions/upload-artifact@v5
+        with:
+          name: debian-${{ matrix.target }}
+          path: "*.deb"
+
   release:
-    needs: build
+    needs: [build, debian-packages]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -121,7 +149,7 @@ jobs:
       - name: Prepare release assets
         run: |
           mkdir release-assets
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec cp {} release-assets/ \;
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.deb" \) -exec cp {} release-assets/ \;
 
       - name: Generate changelog
         run: |
@@ -224,33 +252,6 @@ jobs:
           git add Formula/png2lvgl.rb
           git commit -m "Update png2lvgl to ${VERSION}"
           git push
-
-  debian-packages:
-    name: Build Debian Packages
-    needs: [build, release]
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - x86_64-unknown-linux-musl
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - run: cargo install cargo-deb
-      - name: Build deb package
-        run: |
-          cargo build --release --target ${{ matrix.target }}
-          cargo deb --target ${{ matrix.target }} --no-build
-      - name: Upload to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          VERSION=${{ steps.version.outputs.version }}
-          DEB_FILE=$(ls target/${{ matrix.target }}/debian/*.deb)
-          gh release upload ${{ steps.version.outputs.tag }} "$DEB_FILE"
 
   publish-crates:
     name: Publish to crates.io
