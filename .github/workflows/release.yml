@@ -159,6 +159,11 @@ jobs:
             
             ### 📦 Installation
             
+            **Cargo (Recommended):**
+            ```bash
+            cargo install png2lvgl
+            ```
+            
             **Homebrew (macOS):**
             ```bash
             brew tap metaneutrons/tap
