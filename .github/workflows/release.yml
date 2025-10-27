@@ -140,6 +140,27 @@ jobs:
           files: release-assets/*
           generate_release_notes: true
           prerelease: ${{ steps.version.outputs.is_prerelease == 'true' }}
+          body: |
+            ## 🎨 png2lvgl ${{ steps.version.outputs.version }}
+            
+            Convert PNG images to LVGL C arrays with support for multiple color formats.
+            
+            ### 📦 Installation
+            
+            **Homebrew (macOS):**
+            ```bash
+            brew tap metaneutrons/tap
+            brew install png2lvgl
+            ```
+            
+            **Pre-built binaries:** Download from assets below
+            
+            ### 🚀 Quick Start
+            ```bash
+            png2lvgl input.png              # Auto-detect format
+            png2lvgl input.png -f indexed4  # 4-bit indexed
+            png2lvgl input.png -o output.c  # Custom output
+            ```
 
       - name: Update Homebrew tap
         if: steps.version.outputs.is_prerelease == 'false'
