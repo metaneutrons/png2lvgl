@@ -13,6 +13,24 @@ readme = "README.md"
 keywords = ["lvgl", "embedded", "graphics", "image", "converter"]
 categories = ["command-line-utilities", "embedded", "graphics"]
 
+[package.metadata.deb]
+maintainer = "metaneutrons"
+copyright = "2025, metaneutrons <https://github.com/metaneutrons>"
+license-file = ["LICENSE", "0"]
+extended-description = """\
+png2lvgl converts PNG images to LVGL (Light and Versatile Graphics Library) \
+compatible C arrays. It supports multiple color formats including true color, \
+indexed palettes, and alpha-only modes, making it ideal for embedded systems \
+and resource-constrained environments."""
+depends = "$auto"
+section = "graphics"
+priority = "optional"
+assets = [
+    ["target/release/png2lvgl", "usr/bin/", "755"],
+    ["README.md", "usr/share/doc/png2lvgl/", "644"],
+    ["docs/png2lvgl.1", "usr/share/man/man1/", "644"],
+]
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 image = "0.25"
