@@ -16,6 +16,12 @@ Convert PNG images to LVGL C arrays with support for multiple color formats.
 
 ## Installation
 
+### Cargo (Recommended)
+
+```bash
+cargo install png2lvgl
+```
+
 ### Homebrew (macOS)
 
 ```bash
