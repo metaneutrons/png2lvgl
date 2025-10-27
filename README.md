@@ -16,8 +16,20 @@ Convert PNG images to LVGL C arrays with support for multiple color formats.
 
 ## Installation
 
+### Homebrew (macOS)
+
 ```bash
-cargo install --git https://github.com/metaneturons/png2lvgl
+# Add the tap
+brew tap metaneutrons/tap
+
+# Install png2lvgl
+brew install png2lvgl
+```
+
+### From Source
+
+```bash
+cargo install --git https://github.com/metaneutrons/png2lvgl
 ```
 
 ## Usage
