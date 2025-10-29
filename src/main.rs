@@ -1,13 +1,18 @@
-use anyhow::{Context, Result};
 use clap::Parser;
-use image::{DynamicImage, Rgba};
+use image::{DynamicImage, GenericImageView, Rgba};
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use tracing::{debug, error, info, instrument, warn};
 
 mod built_info {
     include!(concat!(env!("OUT_DIR"), "/built.rs"));
 }
+
+mod error;
+mod validation;
+
+use error::{FormatError, Png2LvglError, Result};
 
 #[derive(Parser)]
 #[command(name = "png2lvgl")]
@@ -34,7 +39,7 @@ struct Args {
     overwrite: bool,
 }
 
-#[derive(Clone, clap::ValueEnum)]
+#[derive(Clone, Debug, clap::ValueEnum)]
 enum ColorFormat {
     Auto,
     TrueColor,
@@ -51,10 +56,35 @@ enum ColorFormat {
 }
 
 fn main() -> Result<()> {
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+        )
+        .init();
+
+    let result = run();
+    
+    if let Err(ref e) = result {
+        error!("Fatal error: {}", e);
+    }
+    
+    result
+}
+
+#[instrument(skip_all)]
+fn run() -> Result<()> {
     let args = Args::parse();
 
     if args.stdout && args.output.is_some() {
-        anyhow::bail!("Cannot use both --stdout and --output");
+        return Err(Png2LvglError::Config(
+            "Cannot use both --stdout and --output".to_string(),
+        ));
+    }
+
+    if let Err(e) = validation::validate_input_file(&args.input) {
+        error!("Input validation failed: {}", e);
+        return Err(e);
     }
 
     let output = if !args.stdout {
@@ -67,17 +97,35 @@ fn main() -> Result<()> {
     };
 
     if let Some(ref path) = output {
-        if path.exists() && !args.overwrite {
-            anyhow::bail!("Output file exists. Use --overwrite to replace it.");
+        if let Err(e) = validation::validate_output_path(path, args.overwrite) {
+            error!("Output validation failed: {}", e);
+            return Err(e);
         }
     }
 
-    let img = image::open(&args.input).context("Failed to open input image")?;
+    info!(?args.input, "Loading image");
+    let img = match image::open(&args.input) {
+        Ok(img) => img,
+        Err(e) => {
+            error!("Failed to load image: {}", e);
+            return Err(e.into());
+        }
+    };
+
+    let (w, h) = img.dimensions();
+    if let Err(e) = validation::validate_dimensions(w, h) {
+        error!("Dimension validation failed: {}", e);
+        return Err(e);
+    }
 
     let format = match &args.format {
         ColorFormat::Auto => detect_format(&img),
         f => f.clone(),
     };
+
+    if let Err(e) = validate_format(&img, &format) {
+        warn!("Format validation warning: {}", e);
+    }
 
     let var_name = output
         .as_ref()
@@ -90,15 +138,31 @@ fn main() -> Result<()> {
     if args.stdout {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        generate_c(&img, &mut handle, &var_name, &format)?;
+        if let Err(e) = generate_c(&img, &mut handle, &var_name, &format) {
+            error!("Failed to generate C code: {}", e);
+            return Err(e);
+        }
     } else {
-        let mut file = File::create(output.as_ref().unwrap())?;
-        generate_c(&img, &mut file, &var_name, &format)?;
-        println!(
+        let output_path = output.as_ref().unwrap();
+        let mut file = match File::create(output_path) {
+            Ok(f) => f,
+            Err(e) => {
+                error!("Failed to create output file: {}", e);
+                return Err(e.into());
+            }
+        };
+        
+        if let Err(e) = generate_c(&img, &mut file, &var_name, &format) {
+            error!("Failed to generate C code: {}", e);
+            let _ = std::fs::remove_file(output_path);
+            return Err(e);
+        }
+        
+        info!(
             "✓ {}x{} → {} ({})",
-            img.width(),
-            img.height(),
-            output.unwrap().display(),
+            w,
+            h,
+            output_path.display(),
             format_name(&format)
         );
     }
@@ -112,6 +176,31 @@ fn detect_format(img: &DynamicImage) -> ColorFormat {
     } else {
         ColorFormat::TrueColor
     }
+}
+
+fn validate_format(img: &DynamicImage, format: &ColorFormat) -> Result<()> {
+    debug!(?format, "Validating format compatibility");
+    
+    match format {
+        ColorFormat::Indexed1 | ColorFormat::Indexed2 | ColorFormat::Indexed4 | ColorFormat::Indexed8 => {
+            let max_colors = match format {
+                ColorFormat::Indexed1 => 2,
+                ColorFormat::Indexed2 => 4,
+                ColorFormat::Indexed4 => 16,
+                ColorFormat::Indexed8 => 256,
+                _ => unreachable!(),
+            };
+            debug!(max_colors, "Checking indexed format constraints");
+        }
+        ColorFormat::Alpha1 | ColorFormat::Alpha2 | ColorFormat::Alpha4 | ColorFormat::Alpha8 => {
+            if img.color().has_color() {
+                warn!("Converting color image to alpha-only format");
+            }
+        }
+        _ => {}
+    }
+    
+    Ok(())
 }
 
 fn format_name(format: &ColorFormat) -> &str {
@@ -131,12 +220,14 @@ fn format_name(format: &ColorFormat) -> &str {
     }
 }
 
+#[instrument(skip(img, writer))]
 fn generate_c<W: Write>(
     img: &DynamicImage,
     writer: &mut W,
     var_name: &str,
     format: &ColorFormat,
 ) -> Result<()> {
+    debug!(?format, var_name, "Generating C code");
     write_header(writer, var_name)?;
 
     match format {
@@ -145,9 +236,15 @@ fn generate_c<W: Write>(
         ColorFormat::TrueColor => write_true_color(img, writer, var_name, false)?,
         ColorFormat::TrueColorAlpha => write_true_color(img, writer, var_name, true)?,
         ColorFormat::Alpha8 => write_alpha8(img, writer, var_name)?,
-        _ => anyhow::bail!("Format not yet implemented"),
+        f => {
+            return Err(FormatError::NotImplemented {
+                format: format!("{:?}", f),
+            }
+            .into())
+        }
     }
 
+    debug!("C code generation complete");
     Ok(())
 }
 
@@ -181,9 +278,11 @@ fn write_header<W: Write>(writer: &mut W, var_name: &str) -> Result<()> {
     Ok(())
 }
 
+#[instrument(skip(img, writer))]
 fn write_indexed4<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
+    debug!(w, h, "Writing indexed 4-bit data");
 
     writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
@@ -220,9 +319,11 @@ fn write_indexed4<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) 
     Ok(())
 }
 
+#[instrument(skip(img, writer))]
 fn write_indexed8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
+    debug!(w, h, "Writing indexed 8-bit data");
 
     writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
@@ -245,6 +346,7 @@ fn write_indexed8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) 
     Ok(())
 }
 
+#[instrument(skip(img, writer))]
 fn write_true_color<W: Write>(
     img: &DynamicImage,
     writer: &mut W,
@@ -253,6 +355,7 @@ fn write_true_color<W: Write>(
 ) -> Result<()> {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
+    debug!(w, h, alpha, "Writing true color data");
 
     writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
@@ -281,9 +384,11 @@ fn write_true_color<W: Write>(
     Ok(())
 }
 
+#[instrument(skip(img, writer))]
 fn write_alpha8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
+    debug!(w, h, "Writing alpha 8-bit data");
 
     writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
