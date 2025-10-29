@@ -221,6 +221,7 @@ jobs:
 
             def install
               bin.install "png2lvgl"
+              man1.install "share/man/man1/png2lvgl.1"
             end
 
             test do
