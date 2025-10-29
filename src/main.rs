@@ -183,24 +183,67 @@ fn validate_format(img: &DynamicImage, format: &ColorFormat) -> Result<()> {
     
     match format {
         ColorFormat::Indexed1 | ColorFormat::Indexed2 | ColorFormat::Indexed4 | ColorFormat::Indexed8 => {
-            let max_colors = match format {
-                ColorFormat::Indexed1 => 2,
-                ColorFormat::Indexed2 => 4,
-                ColorFormat::Indexed4 => 16,
-                ColorFormat::Indexed8 => 256,
+            let (max_colors, format_name) = match format {
+                ColorFormat::Indexed1 => (2, "Indexed1"),
+                ColorFormat::Indexed2 => (4, "Indexed2"),
+                ColorFormat::Indexed4 => (16, "Indexed4"),
+                ColorFormat::Indexed8 => (256, "Indexed8"),
                 _ => unreachable!(),
             };
-            debug!(max_colors, "Checking indexed format constraints");
+            
+            let unique_colors = count_unique_colors(img);
+            debug!(unique_colors, max_colors, "Checking color count");
+            
+            if unique_colors > max_colors {
+                return Err(FormatError::TooManyColors {
+                    colors: unique_colors,
+                    max_colors,
+                    format: format_name.to_string(),
+                }
+                .into());
+            }
         }
         ColorFormat::Alpha1 | ColorFormat::Alpha2 | ColorFormat::Alpha4 | ColorFormat::Alpha8 => {
+            let (bit_depth, format_name) = match format {
+                ColorFormat::Alpha1 => (1, "Alpha1"),
+                ColorFormat::Alpha2 => (2, "Alpha2"),
+                ColorFormat::Alpha4 => (4, "Alpha4"),
+                ColorFormat::Alpha8 => (8, "Alpha8"),
+                _ => unreachable!(),
+            };
+            
             if img.color().has_color() {
                 warn!("Converting color image to alpha-only format");
+            }
+            
+            let img_bits = img.color().bits_per_pixel();
+            if bit_depth < 8 && img_bits > bit_depth * 4 {
+                return Err(FormatError::InvalidBitDepth {
+                    depth: bit_depth as u8,
+                    format: format_name.to_string(),
+                }
+                .into());
             }
         }
         _ => {}
     }
     
     Ok(())
+}
+
+fn count_unique_colors(img: &DynamicImage) -> usize {
+    use std::collections::HashSet;
+    let rgba = img.to_rgba8();
+    let mut colors = HashSet::new();
+    
+    for pixel in rgba.pixels() {
+        colors.insert((pixel[0], pixel[1], pixel[2]));
+        if colors.len() > 256 {
+            return colors.len();
+        }
+    }
+    
+    colors.len()
 }
 
 fn format_name(format: &ColorFormat) -> &str {
