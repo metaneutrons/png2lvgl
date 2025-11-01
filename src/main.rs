@@ -37,6 +37,16 @@ struct Args {
     /// Overwrite existing output file
     #[arg(long)]
     overwrite: bool,
+
+    /// Target LVGL version (8 or 9)
+    #[arg(long, value_enum, default_value = "v9")]
+    lvgl_version: LvglVersion,
+}
+
+#[derive(Clone, Debug, clap::ValueEnum)]
+enum LvglVersion {
+    V8,
+    V9,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -138,7 +148,7 @@ fn run() -> Result<()> {
     if args.stdout {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        if let Err(e) = generate_c(&img, &mut handle, &var_name, &format) {
+        if let Err(e) = generate_c(&img, &mut handle, &var_name, &format, &args.lvgl_version) {
             error!("Failed to generate C code: {}", e);
             return Err(e);
         }
@@ -152,7 +162,7 @@ fn run() -> Result<()> {
             }
         };
         
-        if let Err(e) = generate_c(&img, &mut file, &var_name, &format) {
+        if let Err(e) = generate_c(&img, &mut file, &var_name, &format, &args.lvgl_version) {
             error!("Failed to generate C code: {}", e);
             let _ = std::fs::remove_file(output_path);
             return Err(e);
@@ -163,7 +173,7 @@ fn run() -> Result<()> {
             w,
             h,
             output_path.display(),
-            format_name(&format)
+            format_name(&format, &args.lvgl_version)
         );
     }
 
@@ -246,20 +256,36 @@ fn count_unique_colors(img: &DynamicImage) -> usize {
     colors.len()
 }
 
-fn format_name(format: &ColorFormat) -> &str {
-    match format {
-        ColorFormat::Auto => "auto",
-        ColorFormat::TrueColor => "LV_IMG_CF_TRUE_COLOR",
-        ColorFormat::TrueColorAlpha => "LV_IMG_CF_TRUE_COLOR_ALPHA",
-        ColorFormat::TrueColorChroma => "LV_IMG_CF_TRUE_COLOR_CHROMA_KEYED",
-        ColorFormat::Indexed1 => "LV_IMG_CF_INDEXED_1BIT",
-        ColorFormat::Indexed2 => "LV_IMG_CF_INDEXED_2BIT",
-        ColorFormat::Indexed4 => "LV_IMG_CF_INDEXED_4BIT",
-        ColorFormat::Indexed8 => "LV_IMG_CF_INDEXED_8BIT",
-        ColorFormat::Alpha1 => "LV_IMG_CF_ALPHA_1BIT",
-        ColorFormat::Alpha2 => "LV_IMG_CF_ALPHA_2BIT",
-        ColorFormat::Alpha4 => "LV_IMG_CF_ALPHA_4BIT",
-        ColorFormat::Alpha8 => "LV_IMG_CF_ALPHA_8BIT",
+fn format_name(format: &ColorFormat, lvgl_version: &LvglVersion) -> &'static str {
+    match lvgl_version {
+        LvglVersion::V8 => match format {
+            ColorFormat::Auto => "auto",
+            ColorFormat::TrueColor => "LV_IMG_CF_TRUE_COLOR",
+            ColorFormat::TrueColorAlpha => "LV_IMG_CF_TRUE_COLOR_ALPHA",
+            ColorFormat::TrueColorChroma => "LV_IMG_CF_TRUE_COLOR_CHROMA_KEYED",
+            ColorFormat::Indexed1 => "LV_IMG_CF_INDEXED_1BIT",
+            ColorFormat::Indexed2 => "LV_IMG_CF_INDEXED_2BIT",
+            ColorFormat::Indexed4 => "LV_IMG_CF_INDEXED_4BIT",
+            ColorFormat::Indexed8 => "LV_IMG_CF_INDEXED_8BIT",
+            ColorFormat::Alpha1 => "LV_IMG_CF_ALPHA_1BIT",
+            ColorFormat::Alpha2 => "LV_IMG_CF_ALPHA_2BIT",
+            ColorFormat::Alpha4 => "LV_IMG_CF_ALPHA_4BIT",
+            ColorFormat::Alpha8 => "LV_IMG_CF_ALPHA_8BIT",
+        },
+        LvglVersion::V9 => match format {
+            ColorFormat::Auto => "auto",
+            ColorFormat::TrueColor => "LV_COLOR_FORMAT_RGB565",
+            ColorFormat::TrueColorAlpha => "LV_COLOR_FORMAT_RGB565A8",
+            ColorFormat::TrueColorChroma => "LV_COLOR_FORMAT_RGB565_CHROMA_KEYED",
+            ColorFormat::Indexed1 => "LV_COLOR_FORMAT_I1",
+            ColorFormat::Indexed2 => "LV_COLOR_FORMAT_I2",
+            ColorFormat::Indexed4 => "LV_COLOR_FORMAT_I4",
+            ColorFormat::Indexed8 => "LV_COLOR_FORMAT_I8",
+            ColorFormat::Alpha1 => "LV_COLOR_FORMAT_A1",
+            ColorFormat::Alpha2 => "LV_COLOR_FORMAT_A2",
+            ColorFormat::Alpha4 => "LV_COLOR_FORMAT_A4",
+            ColorFormat::Alpha8 => "LV_COLOR_FORMAT_A8",
+        },
     }
 }
 
@@ -269,16 +295,19 @@ fn generate_c<W: Write>(
     writer: &mut W,
     var_name: &str,
     format: &ColorFormat,
+    lvgl_version: &LvglVersion,
 ) -> Result<()> {
-    debug!(?format, var_name, "Generating C code");
+    debug!(?format, ?lvgl_version, var_name, "Generating C code");
     write_header(writer, var_name)?;
 
+    let format_const = format_name(format, lvgl_version);
+
     match format {
-        ColorFormat::Indexed4 => write_indexed4(img, writer, var_name)?,
-        ColorFormat::Indexed8 => write_indexed8(img, writer, var_name)?,
-        ColorFormat::TrueColor => write_true_color(img, writer, var_name, false)?,
-        ColorFormat::TrueColorAlpha => write_true_color(img, writer, var_name, true)?,
-        ColorFormat::Alpha8 => write_alpha8(img, writer, var_name)?,
+        ColorFormat::Indexed4 => write_indexed4(img, writer, var_name, format_const)?,
+        ColorFormat::Indexed8 => write_indexed8(img, writer, var_name, format_const)?,
+        ColorFormat::TrueColor => write_true_color(img, writer, var_name, false, format_const)?,
+        ColorFormat::TrueColorAlpha => write_true_color(img, writer, var_name, true, format_const)?,
+        ColorFormat::Alpha8 => write_alpha8(img, writer, var_name, format_const)?,
         f => {
             return Err(FormatError::NotImplemented {
                 format: format!("{:?}", f),
@@ -322,7 +351,7 @@ fn write_header<W: Write>(writer: &mut W, var_name: &str) -> Result<()> {
 }
 
 #[instrument(skip(img, writer))]
-fn write_indexed4<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
+fn write_indexed4<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, format_const: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     debug!(w, h, "Writing indexed 4-bit data");
@@ -358,12 +387,12 @@ fn write_indexed4<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) 
     write_data_array(writer, &data)?;
     writeln!(writer, "}};\n")?;
 
-    write_descriptor(writer, var_name, w, h, "LV_IMG_CF_INDEXED_4BIT", data.len())?;
+    write_descriptor(writer, var_name, w, h, format_const, data.len())?;
     Ok(())
 }
 
 #[instrument(skip(img, writer))]
-fn write_indexed8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
+fn write_indexed8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, format_const: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     debug!(w, h, "Writing indexed 8-bit data");
@@ -385,7 +414,7 @@ fn write_indexed8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) 
     write_data_array(writer, &data)?;
     writeln!(writer, "}};\n")?;
 
-    write_descriptor(writer, var_name, w, h, "LV_IMG_CF_INDEXED_8BIT", data.len())?;
+    write_descriptor(writer, var_name, w, h, format_const, data.len())?;
     Ok(())
 }
 
@@ -395,6 +424,7 @@ fn write_true_color<W: Write>(
     writer: &mut W,
     var_name: &str,
     alpha: bool,
+    format_const: &str,
 ) -> Result<()> {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -418,17 +448,12 @@ fn write_true_color<W: Write>(
     write_data_array(writer, &data)?;
     writeln!(writer, "}};\n")?;
 
-    let cf = if alpha {
-        "LV_IMG_CF_TRUE_COLOR_ALPHA"
-    } else {
-        "LV_IMG_CF_TRUE_COLOR"
-    };
-    write_descriptor(writer, var_name, w, h, cf, data.len())?;
+    write_descriptor(writer, var_name, w, h, format_const, data.len())?;
     Ok(())
 }
 
 #[instrument(skip(img, writer))]
-fn write_alpha8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) -> Result<()> {
+fn write_alpha8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, format_const: &str) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     debug!(w, h, "Writing alpha 8-bit data");
@@ -440,7 +465,7 @@ fn write_alpha8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str) ->
     write_data_array(writer, &data)?;
     writeln!(writer, "}};\n")?;
 
-    write_descriptor(writer, var_name, w, h, "LV_IMG_CF_ALPHA_8BIT", data.len())?;
+    write_descriptor(writer, var_name, w, h, format_const, data.len())?;
     Ok(())
 }
 

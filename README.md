@@ -45,8 +45,11 @@ cargo install --git https://github.com/metaneutrons/png2lvgl
 ## Usage
 
 ```bash
-# Basic usage (auto-detects format)
+# Basic usage (auto-detects format, defaults to LVGL 9.0)
 png2lvgl input.png
+
+# Target LVGL 8.x
+png2lvgl input.png --lvgl-version v8
 
 # Specify output file
 png2lvgl input.png -o output.c
