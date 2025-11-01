@@ -38,9 +38,23 @@ struct Args {
     #[arg(long)]
     overwrite: bool,
 
-    /// Target LVGL version (8 or 9)
-    #[arg(long, value_enum, default_value = "v9")]
-    lvgl_version: LvglVersion,
+    /// Target LVGL 8.x (uses LV_IMG_CF_* constants)
+    #[arg(long, conflicts_with = "lvgl_v9", group = "lvgl_version")]
+    lvgl_v8: bool,
+
+    /// Target LVGL 9.x (uses LV_COLOR_FORMAT_* constants, default)
+    #[arg(long, group = "lvgl_version")]
+    lvgl_v9: bool,
+}
+
+impl Args {
+    fn lvgl_version(&self) -> LvglVersion {
+        if self.lvgl_v8 {
+            LvglVersion::V8
+        } else {
+            LvglVersion::V9
+        }
+    }
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -85,6 +99,7 @@ fn main() -> Result<()> {
 #[instrument(skip_all)]
 fn run() -> Result<()> {
     let args = Args::parse();
+    let lvgl_version = args.lvgl_version();
 
     if args.stdout && args.output.is_some() {
         return Err(Png2LvglError::Config(
@@ -148,7 +163,7 @@ fn run() -> Result<()> {
     if args.stdout {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        if let Err(e) = generate_c(&img, &mut handle, &var_name, &format, &args.lvgl_version) {
+        if let Err(e) = generate_c(&img, &mut handle, &var_name, &format, &lvgl_version) {
             error!("Failed to generate C code: {}", e);
             return Err(e);
         }
@@ -162,7 +177,7 @@ fn run() -> Result<()> {
             }
         };
         
-        if let Err(e) = generate_c(&img, &mut file, &var_name, &format, &args.lvgl_version) {
+        if let Err(e) = generate_c(&img, &mut file, &var_name, &format, &lvgl_version) {
             error!("Failed to generate C code: {}", e);
             let _ = std::fs::remove_file(output_path);
             return Err(e);
@@ -173,7 +188,7 @@ fn run() -> Result<()> {
             w,
             h,
             output_path.display(),
-            format_name(&format, &args.lvgl_version)
+            format_name(&format, &lvgl_version)
         );
     }
 

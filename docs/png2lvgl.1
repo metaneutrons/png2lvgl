@@ -68,6 +68,12 @@ RGB565 with chroma key for transparent color
 8-bit alpha only (256 levels, full grayscale)
 .RE
 .TP
+.BR \-\-lvgl-v8
+Target LVGL 8.x (uses LV_IMG_CF_* format constants). Mutually exclusive with \fB\-\-lvgl-v9\fR.
+.TP
+.BR \-\-lvgl-v9
+Target LVGL 9.x (uses LV_COLOR_FORMAT_* format constants). This is the default if neither flag is specified.
+.TP
 .BR \-\-overwrite
 Overwrite existing output file without prompting. By default, the tool refuses to
 overwrite existing files to prevent accidental data loss.
@@ -79,11 +85,18 @@ Print help information and exit
 Print version information and exit
 .SH EXAMPLES
 .TP
-Convert a PNG with automatic format detection:
+Convert a PNG with automatic format detection (LVGL 9.x):
 .B png2lvgl icon.png
 .PP
 .RS
-Creates \fBicon.c\fR with automatically detected format.
+Creates \fBicon.c\fR with automatically detected format using LVGL 9.x constants.
+.RE
+.TP
+Target LVGL 8.x:
+.B png2lvgl icon.png \-\-lvgl-v8
+.PP
+.RS
+Generates output compatible with LVGL 8.x using LV_IMG_CF_* constants.
 .RE
 .TP
 Specify output file:

@@ -49,7 +49,7 @@ cargo install --git https://github.com/metaneutrons/png2lvgl
 png2lvgl input.png
 
 # Target LVGL 8.x
-png2lvgl input.png --lvgl-version v8
+png2lvgl input.png --lvgl-v8
 
 # Specify output file
 png2lvgl input.png -o output.c
