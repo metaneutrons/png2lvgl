@@ -1,0 +1,13 @@
+#!/usr/bin/env sh
+
+# Format Rust code
+cargo fmt --all
+
+# Check GitHub workflows if changed
+if git diff --cached --name-only | grep -q '^\.github/workflows/'; then
+  if ! command -v actionlint &> /dev/null; then
+    echo "actionlint not found. Install: brew install actionlint (macOS) or go install github.com/rhysd/actionlint/cmd/actionlint@latest"
+    exit 1
+  fi
+  actionlint
+fi

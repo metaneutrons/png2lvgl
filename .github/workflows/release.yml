@@ -32,7 +32,7 @@ jobs:
           fi
           VERSION=${VERSION#v}
           cargo install cargo-edit
-          cargo set-version ${VERSION}
+          cargo set-version "${VERSION}"
       
       - name: Upload updated Cargo files
         uses: actions/upload-artifact@v5
@@ -65,7 +65,6 @@ jobs:
             target: x86_64-apple-darwin
           - os: macos-latest
             target: aarch64-apple-darwin
-            target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v5
       
@@ -84,9 +83,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y gcc-aarch64-linux-gnu
-          if [[ "${{ matrix.target }}" == *"musl"* ]]; then
-            sudo apt-get install -y musl-tools
-          fi
+          case "${{ matrix.target }}" in
+            *musl*)
+              sudo apt-get install -y musl-tools
+              ;;
+          esac
           # Configure linker for ARM64
           mkdir -p .cargo
           cat >> .cargo/config.toml << EOF
@@ -123,21 +124,24 @@ jobs:
           fi
           BIN_NAME=png2lvgl
           
-          if [[ "${{ matrix.target }}" == *"windows"* ]]; then
-            ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.zip"
-            cp target/${{ matrix.target }}/release/${BIN_NAME}.exe .
-            7z a "$ARCHIVE" ${BIN_NAME}.exe README.md LICENSE
-          else
-            ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.tar.gz"
-            cp target/${{ matrix.target }}/release/${BIN_NAME} .
-            chmod +x ${BIN_NAME}
-            mkdir -p share/man/man1
-            # Copy generated manpage from build output
-            find target/${{ matrix.target }}/release/build/png2lvgl-*/out/png2lvgl.1 -exec cp {} share/man/man1/ \;
-            tar czf "$ARCHIVE" ${BIN_NAME} README.md LICENSE share/
-          fi
+          case "${{ matrix.target }}" in
+            *windows*)
+              ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.zip"
+              cp target/${{ matrix.target }}/release/${BIN_NAME}.exe .
+              7z a "$ARCHIVE" "${BIN_NAME}.exe" README.md LICENSE
+              ;;
+            *)
+              ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.tar.gz"
+              cp target/${{ matrix.target }}/release/${BIN_NAME} .
+              chmod +x "${BIN_NAME}"
+              mkdir -p share/man/man1
+              # Copy generated manpage from build output
+              find target/${{ matrix.target }}/release/build/png2lvgl-*/out/png2lvgl.1 -exec cp {} share/man/man1/ \;
+              tar czf "$ARCHIVE" "${BIN_NAME}" README.md LICENSE share/
+              ;;
+          esac
           
-          echo "ARCHIVE=$ARCHIVE" >> $GITHUB_ENV
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - uses: actions/upload-artifact@v5
         with:
@@ -175,9 +179,11 @@ jobs:
             IS_PRERELEASE=false
           fi
           
-          echo "tag=${TAG}" >> $GITHUB_OUTPUT
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
-          echo "is_prerelease=${IS_PRERELEASE}" >> $GITHUB_OUTPUT
+          {
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            echo "is_prerelease=${IS_PRERELEASE}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Create tag if manual trigger
         if: inputs.tag
@@ -269,9 +275,11 @@ jobs:
           X64_SHA=$(sha256sum "$X64_FILE" | cut -d' ' -f1)
           ARM64_SHA=$(sha256sum "$ARM64_FILE" | cut -d' ' -f1)
           
-          echo "x64_sha=${X64_SHA}" >> $GITHUB_OUTPUT
-          echo "arm64_sha=${ARM64_SHA}" >> $GITHUB_OUTPUT
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          {
+            echo "x64_sha=${X64_SHA}"
+            echo "arm64_sha=${ARM64_SHA}"
+            echo "version=${VERSION}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Update Homebrew tap
         env:
@@ -281,7 +289,7 @@ jobs:
           X64_SHA=${{ steps.checksums.outputs.x64_sha }}
           ARM64_SHA=${{ steps.checksums.outputs.arm64_sha }}
           
-          git clone https://x-access-token:${TAP_TOKEN}@github.com/metaneutrons/homebrew-tap.git
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/metaneutrons/homebrew-tap.git"
           cd homebrew-tap
           mkdir -p Formula
           
@@ -350,7 +358,7 @@ jobs:
             VERSION=${GITHUB_REF#refs/tags/}
           fi
           VERSION=${VERSION#v}
-          echo "version=${VERSION}" >> $GITHUB_OUTPUT
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
       
       - name: Update PKGBUILD version
         run: |
