@@ -40,3 +40,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [build-dependencies]
 built = { version = "0.8", features = ["git2"] }
+clap = { version = "4.5", features = ["derive"] }
+clap_mangen = "0.2"
+chrono = "0.4"

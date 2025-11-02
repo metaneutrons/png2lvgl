@@ -1,88 +1,53 @@
-.TH PNG2LVGL 1 "2025-10-27" "png2lvgl 0.1.1" "User Commands"
+.ie \n(.g .ds Aq \(aq
+.el .ds Aq '
+.TH png2lvgl 1 2025-11-02 "png2lvgl 0.1.0" 
 .SH NAME
 png2lvgl \- Convert PNG images to LVGL C arrays
 .SH SYNOPSIS
-.B png2lvgl
-[\fIOPTIONS\fR]
-.I INPUT
+\fBpng2lvgl\fR [\fB\-o\fR|\fB\-\-output\fR] [\fB\-\-stdout\fR] [\fB\-f\fR|\fB\-\-format\fR] [\fB\-\-overwrite\fR] [\fB\-\-lvgl\-v8\fR] [\fB\-\-lvgl\-v9\fR] [\fB\-h\fR|\fB\-\-help\fR] [\fB\-V\fR|\fB\-\-version\fR] <\fIINPUT\fR> 
 .SH DESCRIPTION
-.B png2lvgl
-converts PNG images to LVGL (Light and Versatile Graphics Library) compatible C arrays.
-It supports multiple color formats including true color, indexed palettes, and alpha-only modes,
-making it ideal for embedded systems and resource-constrained environments.
-.PP
-The tool automatically detects the optimal format based on the input image, or you can
-explicitly specify the desired output format. Generated C files include proper LVGL headers,
-memory alignment attributes, and image descriptors ready for use in LVGL applications.
+png2lvgl converts PNG images to LVGL (Light and Versatile Graphics Library) compatible C arrays. It supports multiple color formats including true color, indexed palettes, and alpha\-only modes, making it ideal for embedded systems and resource\-constrained environments.
 .SH OPTIONS
 .TP
-.I INPUT
-Input PNG file to convert (required)
+\fB\-o\fR, \fB\-\-output\fR \fI<OUTPUT>\fR
+Output C file (defaults to input filename with .c extension)
 .TP
-.BR \-o ", " \-\-output " " \fIOUTPUT\fR
-Output C file path. If not specified, uses the input filename with .c extension.
+\fB\-\-stdout\fR
+Write to stdout instead of file
 .TP
-.BR \-\-stdout
-Write output to stdout instead of a file. Cannot be used with \fB\-\-output\fR.
+\fB\-f\fR, \fB\-\-format\fR \fI<FORMAT>\fR [default: auto]
+Specify the color format for conversion. Available formats:
+auto \- Automatically detect optimal format (default)
+true\-color \- RGB565 format (16\-bit per pixel)
+true\-color\-alpha \- RGB565 + 8\-bit alpha (24\-bit per pixel)
+true\-color\-chroma \- RGB565 with chroma key
+indexed1/2/4/8 \- Palette\-based (2/4/16/256 colors)
+alpha1/2/4/8 \- Alpha only (2/4/16/256 levels)
+.br
+
+.br
+[\fIpossible values: \fRauto, true\-color, true\-color\-alpha, true\-color\-chroma, indexed1, indexed2, indexed4, indexed8, alpha1, alpha2, alpha4, alpha8]
 .TP
-.BR \-f ", " \-\-format " " \fIFORMAT\fR
-Specify the color format for conversion. Default is \fBauto\fR (automatic detection).
-.RS
-.PP
-Available formats:
+\fB\-\-overwrite\fR
+Overwrite existing output file
 .TP
-.B auto
-Automatically detect optimal format (default)
+\fB\-\-lvgl\-v8\fR
+Target LVGL 8.x (uses LV_IMG_CF_* constants)
 .TP
-.B true-color
-RGB565 format for full color images (16-bit per pixel)
+\fB\-\-lvgl\-v9\fR
+Target LVGL 9.x (uses LV_COLOR_FORMAT_* constants, default)
 .TP
-.B true-color-alpha
-RGB565 with 8-bit alpha channel for transparency (24-bit per pixel)
+\fB\-h\fR, \fB\-\-help\fR
+Print help (see a summary with \*(Aq\-h\*(Aq)
 .TP
-.B true-color-chroma
-RGB565 with chroma key for transparent color
+\fB\-V\fR, \fB\-\-version\fR
+Print version
 .TP
-.B indexed1
-1-bit indexed palette (2 colors, monochrome)
-.TP
-.B indexed2
-2-bit indexed palette (4 colors)
-.TP
-.B indexed4
-4-bit indexed palette (16 colors, grayscale)
-.TP
-.B indexed8
-8-bit indexed palette (256 colors, grayscale)
-.TP
-.B alpha1
-1-bit alpha only (2 levels)
-.TP
-.B alpha2
-2-bit alpha only (4 levels)
-.TP
-.B alpha4
-4-bit alpha only (16 levels)
-.TP
-.B alpha8
-8-bit alpha only (256 levels, full grayscale)
-.RE
-.TP
-.BR \-\-lvgl-v8
-Target LVGL 8.x (uses LV_IMG_CF_* format constants). Mutually exclusive with \fB\-\-lvgl-v9\fR.
-.TP
-.BR \-\-lvgl-v9
-Target LVGL 9.x (uses LV_COLOR_FORMAT_* format constants). This is the default if neither flag is specified.
-.TP
-.BR \-\-overwrite
-Overwrite existing output file without prompting. By default, the tool refuses to
-overwrite existing files to prevent accidental data loss.
-.TP
-.BR \-h ", " \-\-help
-Print help information and exit
-.TP
-.BR \-V ", " \-\-version
-Print version information and exit
+<\fIINPUT\fR>
+Input PNG file
+.SH VERSION
+v0.1.0
+
 .SH EXAMPLES
 .TP
 Convert a PNG with automatic format detection (LVGL 9.x):
@@ -99,9 +64,6 @@ Target LVGL 8.x:
 Generates output compatible with LVGL 8.x using LV_IMG_CF_* constants.
 .RE
 .TP
-Specify output file:
-.B png2lvgl input.png \-o output.c
-.TP
 Use 4-bit indexed grayscale:
 .B png2lvgl logo.png \-f indexed4
 .PP
@@ -109,11 +71,8 @@ Use 4-bit indexed grayscale:
 Converts to 16-color grayscale palette, ideal for small icons.
 .RE
 .TP
-Output to stdout for piping:
+Output to stdout:
 .B png2lvgl image.png \-\-stdout > result.c
-.TP
-Overwrite existing file:
-.B png2lvgl sprite.png \-\-overwrite
 .TP
 Convert with true color and alpha:
 .B png2lvgl button.png \-f true-color-alpha \-o ui/button.c
@@ -129,20 +88,6 @@ Color palette data (for indexed formats)
 Pixel data array
 .IP \(bu 2
 Image descriptor structure (lv_img_dsc_t)
-.PP
-Example output structure:
-.PP
-.nf
-.RS
-const lv_img_dsc_t my_image = {
-  .header.cf = LV_IMG_CF_INDEXED_4BIT,
-  .header.w = 64,
-  .header.h = 64,
-  .data_size = 2048,
-  .data = my_image_map,
-};
-.RE
-.fi
 .SH FORMAT SELECTION GUIDE
 .TP
 .B True Color (RGB565)
@@ -153,24 +98,18 @@ Use when transparency is needed with full color. 24-bit per pixel.
 .TP
 .B Indexed (1/2/4/8-bit)
 Use for icons, logos, or images with limited colors. Saves memory with palette-based encoding.
-Automatically converts to grayscale.
 .TP
 .B Alpha Only (1/2/4/8-bit)
-Use for masks, monochrome icons, or alpha-only overlays. Most memory-efficient for simple graphics.
-.SH EXIT STATUS
+Use for masks, monochrome icons, or alpha-only overlays. Most memory-efficient.
+.SH LVGL VERSION COMPATIBILITY
 .TP
-.B 0
-Success
+.B LVGL 9.x (default)
+Uses new color format constants: LV_COLOR_FORMAT_RGB565, LV_COLOR_FORMAT_I4, LV_COLOR_FORMAT_A8
 .TP
-.B 1
-Error (invalid input, file not found, conversion failure, etc.)
-.SH FILES
-.TP
-.I *.png
-Input PNG image files
-.TP
-.I *.c
-Generated C source files with LVGL image data
+.B LVGL 8.x
+Uses legacy image format constants: LV_IMG_CF_TRUE_COLOR, LV_IMG_CF_INDEXED_4BIT, LV_IMG_CF_ALPHA_8BIT
+.PP
+Use \fB\-\-lvgl-v8\fR flag for LVGL 8.x projects, or omit for LVGL 9.x (default).
 .SH NOTES
 .IP \(bu 2
 The tool preserves image dimensions in the output
@@ -178,8 +117,6 @@ The tool preserves image dimensions in the output
 Indexed formats automatically convert images to grayscale
 .IP \(bu 2
 Alpha-only formats extract only the alpha channel
-.IP \(bu 2
-Generated files are compatible with LVGL v8.x and v9.x
 .IP \(bu 2
 Output files use proper C naming conventions (underscores for hyphens)
 .SH BUGS
