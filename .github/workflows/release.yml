@@ -119,6 +119,8 @@ jobs:
           path: |
             ${{ env.ARCHIVE }}
             *.deb
+          if-no-files-found: ignore
+            *.deb
 
   release:
     needs: [build]
