@@ -107,7 +107,8 @@ jobs:
             cp target/${{ matrix.target }}/release/${BIN_NAME} .
             chmod +x ${BIN_NAME}
             mkdir -p share/man/man1
-            cp docs/png2lvgl.1 share/man/man1/
+            # Copy generated manpage from build output
+            find target/${{ matrix.target }}/release/build/png2lvgl-*/out/png2lvgl.1 -exec cp {} share/man/man1/ \;
             tar czf "$ARCHIVE" ${BIN_NAME} README.md LICENSE share/
           fi
           

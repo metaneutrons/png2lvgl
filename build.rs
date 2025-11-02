@@ -114,12 +114,8 @@ Project homepage: https://github.com/metaneutrons/png2lvgl
     let mut full_content = String::from_utf8(buffer).unwrap();
     full_content.push_str(custom_sections);
     
-    std::fs::write(out_dir.join("png2lvgl.1"), &full_content)
+    std::fs::write(out_dir.join("png2lvgl.1"), full_content)
         .expect("Failed to write manpage");
-    
-    // Also copy to docs/ for distribution
-    std::fs::write("docs/png2lvgl.1", full_content)
-        .expect("Failed to write manpage to docs/");
     
     println!("cargo:rerun-if-changed=src/main.rs");
     println!("cargo:rerun-if-changed=build.rs");
