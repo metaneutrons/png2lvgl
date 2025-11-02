@@ -16,8 +16,35 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  set-version:
+    name: Set version from tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      
+      - name: Update version in Cargo.toml
+        run: |
+          if [[ -n "${{ inputs.tag }}" ]]; then
+            VERSION=${{ inputs.tag }}
+          else
+            VERSION=${GITHUB_REF#refs/tags/}
+          fi
+          VERSION=${VERSION#v}
+          cargo install cargo-edit
+          cargo set-version ${VERSION}
+      
+      - name: Upload updated Cargo files
+        uses: actions/upload-artifact@v5
+        with:
+          name: cargo-files
+          path: |
+            Cargo.toml
+            Cargo.lock
+
   build:
     name: Build ${{ matrix.target }}
+    needs: set-version
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -34,22 +61,16 @@ jobs:
             target: aarch64-apple-darwin
     steps:
       - uses: actions/checkout@v5
+      
+      - name: Download updated Cargo files
+        uses: actions/download-artifact@v5
+        with:
+          name: cargo-files
+      
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-
-      - name: Set version from tag
-        shell: bash
-        run: |
-          if [[ -n "${{ inputs.tag }}" ]]; then
-            VERSION=${{ inputs.tag }}
-          else
-            VERSION=${GITHUB_REF#refs/tags/}
-          fi
-          VERSION=${VERSION#v}
-          cargo install cargo-edit
-          cargo set-version ${VERSION}
 
       - name: Install musl tools
         if: matrix.target == 'x86_64-unknown-linux-musl'
@@ -250,21 +271,15 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: [build, release]
+    needs: [set-version, build, release]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
       
-      - name: Set version from tag
-        run: |
-          if [[ -n "${{ inputs.tag }}" ]]; then
-            VERSION=${{ inputs.tag }}
-          else
-            VERSION=${GITHUB_REF#refs/tags/}
-          fi
-          VERSION=${VERSION#v}
-          cargo install cargo-edit
-          cargo set-version ${VERSION}
-          
+      - name: Download updated Cargo files
+        uses: actions/download-artifact@v5
+        with:
+          name: cargo-files
+      
+      - uses: dtolnay/rust-toolchain@stable
       - run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
