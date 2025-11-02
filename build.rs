@@ -4,19 +4,19 @@ use std::path::PathBuf;
 fn main() {
     // Generate build info
     built::write_built_file().expect("Failed to acquire build-time information");
-    
+
     // Generate manpage
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let cmd = build_cli();
-    
+
     let man = clap_mangen::Man::new(cmd)
         .section("1")
         .date(chrono::Local::now().format("%Y-%m-%d").to_string())
         .source(format!("png2lvgl {}", env!("CARGO_PKG_VERSION")));
-    
+
     let mut buffer = Vec::new();
     man.render(&mut buffer).expect("Failed to render manpage");
-    
+
     // Add custom sections
     let custom_sections = r#"
 .SH EXAMPLES
@@ -110,20 +110,19 @@ LVGL documentation: https://docs.lvgl.io/
 .br
 Project homepage: https://github.com/metaneutrons/png2lvgl
 "#;
-    
+
     let mut full_content = String::from_utf8(buffer).unwrap();
     full_content.push_str(custom_sections);
-    
-    std::fs::write(out_dir.join("png2lvgl.1"), full_content)
-        .expect("Failed to write manpage");
-    
+
+    std::fs::write(out_dir.join("png2lvgl.1"), full_content).expect("Failed to write manpage");
+
     println!("cargo:rerun-if-changed=src/main.rs");
     println!("cargo:rerun-if-changed=build.rs");
 }
 
 fn build_cli() -> clap::Command {
     use clap::{Arg, Command};
-    
+
     Command::new("png2lvgl")
         .version(env!("CARGO_PKG_VERSION"))
         .about("Convert PNG images to LVGL C arrays")

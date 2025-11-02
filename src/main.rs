@@ -88,11 +88,11 @@ fn main() -> Result<()> {
         .init();
 
     let result = run();
-    
+
     if let Err(ref e) = result {
         error!("Fatal error: {}", e);
     }
-    
+
     result
 }
 
@@ -176,13 +176,13 @@ fn run() -> Result<()> {
                 return Err(e.into());
             }
         };
-        
+
         if let Err(e) = generate_c(&img, &mut file, &var_name, &format, &lvgl_version) {
             error!("Failed to generate C code: {}", e);
             let _ = std::fs::remove_file(output_path);
             return Err(e);
         }
-        
+
         info!(
             "✓ {}x{} → {} ({})",
             w,
@@ -205,9 +205,12 @@ fn detect_format(img: &DynamicImage) -> ColorFormat {
 
 fn validate_format(img: &DynamicImage, format: &ColorFormat) -> Result<()> {
     debug!(?format, "Validating format compatibility");
-    
+
     match format {
-        ColorFormat::Indexed1 | ColorFormat::Indexed2 | ColorFormat::Indexed4 | ColorFormat::Indexed8 => {
+        ColorFormat::Indexed1
+        | ColorFormat::Indexed2
+        | ColorFormat::Indexed4
+        | ColorFormat::Indexed8 => {
             let (max_colors, format_name) = match format {
                 ColorFormat::Indexed1 => (2, "Indexed1"),
                 ColorFormat::Indexed2 => (4, "Indexed2"),
@@ -215,10 +218,10 @@ fn validate_format(img: &DynamicImage, format: &ColorFormat) -> Result<()> {
                 ColorFormat::Indexed8 => (256, "Indexed8"),
                 _ => unreachable!(),
             };
-            
+
             let unique_colors = count_unique_colors(img);
             debug!(unique_colors, max_colors, "Checking color count");
-            
+
             if unique_colors > max_colors {
                 return Err(FormatError::TooManyColors {
                     colors: unique_colors,
@@ -236,11 +239,11 @@ fn validate_format(img: &DynamicImage, format: &ColorFormat) -> Result<()> {
                 ColorFormat::Alpha8 => (8, "Alpha8"),
                 _ => unreachable!(),
             };
-            
+
             if img.color().has_color() {
                 warn!("Converting color image to alpha-only format");
             }
-            
+
             let img_bits = img.color().bits_per_pixel();
             if bit_depth < 8 && img_bits > bit_depth * 4 {
                 return Err(FormatError::InvalidBitDepth {
@@ -252,7 +255,7 @@ fn validate_format(img: &DynamicImage, format: &ColorFormat) -> Result<()> {
         }
         _ => {}
     }
-    
+
     Ok(())
 }
 
@@ -260,14 +263,14 @@ fn count_unique_colors(img: &DynamicImage) -> usize {
     use std::collections::HashSet;
     let rgba = img.to_rgba8();
     let mut colors = HashSet::new();
-    
+
     for pixel in rgba.pixels() {
         colors.insert((pixel[0], pixel[1], pixel[2]));
         if colors.len() > 256 {
             return colors.len();
         }
     }
-    
+
     colors.len()
 }
 
@@ -366,7 +369,12 @@ fn write_header<W: Write>(writer: &mut W, var_name: &str) -> Result<()> {
 }
 
 #[instrument(skip(img, writer))]
-fn write_indexed4<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, format_const: &str) -> Result<()> {
+fn write_indexed4<W: Write>(
+    img: &DynamicImage,
+    writer: &mut W,
+    var_name: &str,
+    format_const: &str,
+) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     debug!(w, h, "Writing indexed 4-bit data");
@@ -407,7 +415,12 @@ fn write_indexed4<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, 
 }
 
 #[instrument(skip(img, writer))]
-fn write_indexed8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, format_const: &str) -> Result<()> {
+fn write_indexed8<W: Write>(
+    img: &DynamicImage,
+    writer: &mut W,
+    var_name: &str,
+    format_const: &str,
+) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     debug!(w, h, "Writing indexed 8-bit data");
@@ -468,7 +481,12 @@ fn write_true_color<W: Write>(
 }
 
 #[instrument(skip(img, writer))]
-fn write_alpha8<W: Write>(img: &DynamicImage, writer: &mut W, var_name: &str, format_const: &str) -> Result<()> {
+fn write_alpha8<W: Write>(
+    img: &DynamicImage,
+    writer: &mut W,
+    var_name: &str,
+    format_const: &str,
+) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
     debug!(w, h, "Writing alpha 8-bit data");
