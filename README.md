@@ -61,6 +61,26 @@ png2lvgl input.png -f indexed4
 png2lvgl input.png --overwrite
 ```
 
+## LVGL Version Compatibility
+
+png2lvgl supports both LVGL 8.x and 9.x APIs:
+
+| Flag | LVGL Version | Format Constants |
+|------|--------------|------------------|
+| `--lvgl-v9` (default) | LVGL 9.x | `LV_COLOR_FORMAT_RGB565`, `LV_COLOR_FORMAT_I4`, `LV_COLOR_FORMAT_A8` |
+| `--lvgl-v8` | LVGL 8.x | `LV_IMG_CF_TRUE_COLOR`, `LV_IMG_CF_INDEXED_4BIT`, `LV_IMG_CF_ALPHA_8BIT` |
+
+**Default:** LVGL 9.x format constants are used if no flag is specified.
+
+**Example:**
+```bash
+# For LVGL 9.x projects (default)
+png2lvgl icon.png -o ui/icon.c
+
+# For LVGL 8.x projects
+png2lvgl icon.png --lvgl-v8 -o ui/icon.c
+```
+
 ## Supported Formats
 
 | Format | Description | Use Case |
