@@ -28,7 +28,7 @@ priority = "optional"
 assets = [
     ["target/release/png2lvgl", "usr/bin/", "755"],
     ["README.md", "usr/share/doc/png2lvgl/", "644"],
-    ["docs/png2lvgl.1", "usr/share/man/man1/", "644"],
+    ["target/release/build/png2lvgl-*/out/png2lvgl.1", "usr/share/man/man1/", "644"],
 ]
 
 [dependencies]
