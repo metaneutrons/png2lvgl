@@ -369,7 +369,7 @@ jobs:
           sed -i "s/^pkgrel=.*/pkgrel=1/" aur/PKGBUILD
       
       - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v2.7.0
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
         with:
           pkgname: png2lvgl
           pkgbuild: ./aur/PKGBUILD
