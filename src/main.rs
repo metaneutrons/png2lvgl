@@ -171,7 +171,14 @@ fn run() -> Result<()> {
     if args.stdout {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        if let Err(e) = generate_c(&img, &mut handle, &var_name, &format, &lvgl_version, args.big_endian) {
+        if let Err(e) = generate_c(
+            &img,
+            &mut handle,
+            &var_name,
+            &format,
+            &lvgl_version,
+            args.big_endian,
+        ) {
             error!("Failed to generate C code: {}", e);
             return Err(e);
         }
@@ -185,7 +192,14 @@ fn run() -> Result<()> {
             }
         };
 
-        if let Err(e) = generate_c(&img, &mut file, &var_name, &format, &lvgl_version, args.big_endian) {
+        if let Err(e) = generate_c(
+            &img,
+            &mut file,
+            &var_name,
+            &format,
+            &lvgl_version,
+            args.big_endian,
+        ) {
             error!("Failed to generate C code: {}", e);
             let _ = std::fs::remove_file(output_path);
             return Err(e);
@@ -338,8 +352,12 @@ fn generate_c<W: Write>(
         ColorFormat::Alpha2 => write_alpha(img, writer, var_name, format_const, 2)?,
         ColorFormat::Alpha4 => write_alpha(img, writer, var_name, format_const, 4)?,
         ColorFormat::Alpha8 => write_alpha(img, writer, var_name, format_const, 8)?,
-        ColorFormat::TrueColor => write_true_color(img, writer, var_name, false, format_const, big_endian)?,
-        ColorFormat::TrueColorAlpha => write_true_color(img, writer, var_name, true, format_const, big_endian)?,
+        ColorFormat::TrueColor => {
+            write_true_color(img, writer, var_name, false, format_const, big_endian)?
+        }
+        ColorFormat::TrueColorAlpha => {
+            write_true_color(img, writer, var_name, true, format_const, big_endian)?
+        }
         ColorFormat::TrueColorChroma => {
             return Err(FormatError::NotImplemented {
                 format: "TrueColorChroma".to_string(),
@@ -413,16 +431,16 @@ fn write_indexed<W: Write>(
     // Pack pixels (MSB first)
     let mut data = Vec::new();
     let mask = (1 << bpp) - 1;
-    
+
     for y in 0..h {
         let mut byte = 0u8;
         let mut shift = 8 - bpp;
-        
+
         for x in 0..w {
             let pixel = gray.get_pixel(x, y)[0];
             let index = (pixel >> (8 - bpp)) & mask;
             byte |= index << shift;
-            
+
             if shift == 0 {
                 data.push(byte);
                 byte = 0;
@@ -431,7 +449,7 @@ fn write_indexed<W: Write>(
                 shift -= bpp;
             }
         }
-        
+
         if shift != 8 - bpp {
             data.push(byte);
         }
@@ -463,12 +481,12 @@ fn write_true_color<W: Write>(
 
     let mut rgb_data = Vec::new();
     let mut alpha_data = Vec::new();
-    
+
     for pixel in rgba.pixels() {
         let Rgba([r, g, b, a]) = *pixel;
         // RGB565 format
         let rgb565 = ((r as u16 & 0xF8) << 8) | ((g as u16 & 0xFC) << 3) | (b as u16 >> 3);
-        
+
         if big_endian {
             rgb_data.push((rgb565 >> 8) as u8);
             rgb_data.push((rgb565 & 0xFF) as u8);
@@ -476,7 +494,7 @@ fn write_true_color<W: Write>(
             rgb_data.push((rgb565 & 0xFF) as u8);
             rgb_data.push((rgb565 >> 8) as u8);
         }
-        
+
         if alpha {
             alpha_data.push(a);
         }
@@ -489,7 +507,14 @@ fn write_true_color<W: Write>(
     }
     writeln!(writer, "}};\n")?;
 
-    write_descriptor(writer, var_name, w, h, format_const, rgb_data.len() + alpha_data.len())?;
+    write_descriptor(
+        writer,
+        var_name,
+        w,
+        h,
+        format_const,
+        rgb_data.len() + alpha_data.len(),
+    )?;
     Ok(())
 }
 
@@ -509,23 +534,23 @@ fn write_alpha<W: Write>(
         var_name.to_uppercase(), var_name)?;
 
     let mut data = Vec::new();
-    
+
     if bpp == 8 {
         // A8: one byte per pixel
         data = gray.pixels().map(|p| p[0]).collect();
     } else {
         // A1/A2/A4: pack pixels (MSB first)
         let mask = (1 << bpp) - 1;
-        
+
         for y in 0..h {
             let mut byte = 0u8;
             let mut shift = 8 - bpp;
-            
+
             for x in 0..w {
                 let pixel = gray.get_pixel(x, y)[0];
                 let value = (pixel >> (8 - bpp)) & mask;
                 byte |= value << shift;
-                
+
                 if shift == 0 {
                     data.push(byte);
                     byte = 0;
@@ -534,7 +559,7 @@ fn write_alpha<W: Write>(
                     shift -= bpp;
                 }
             }
-            
+
             if shift != 8 - bpp {
                 data.push(byte);
             }
