@@ -45,6 +45,10 @@ struct Args {
     /// Target LVGL 9.x (uses LV_COLOR_FORMAT_* constants, default)
     #[arg(long, group = "lvgl_version")]
     lvgl_v9: bool,
+
+    /// Generate big-endian RGB565 (for big-endian systems)
+    #[arg(long)]
+    big_endian: bool,
 }
 
 impl Args {
@@ -152,6 +156,10 @@ fn run() -> Result<()> {
         warn!("Format validation warning: {}", e);
     }
 
+    if args.big_endian && !matches!(format, ColorFormat::TrueColor | ColorFormat::TrueColorAlpha) {
+        warn!("--big-endian flag ignored: only applies to true-color and true-color-alpha formats");
+    }
+
     let var_name = output
         .as_ref()
         .and_then(|p| p.file_stem())
@@ -163,7 +171,7 @@ fn run() -> Result<()> {
     if args.stdout {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
-        if let Err(e) = generate_c(&img, &mut handle, &var_name, &format, &lvgl_version) {
+        if let Err(e) = generate_c(&img, &mut handle, &var_name, &format, &lvgl_version, args.big_endian) {
             error!("Failed to generate C code: {}", e);
             return Err(e);
         }
@@ -177,7 +185,7 @@ fn run() -> Result<()> {
             }
         };
 
-        if let Err(e) = generate_c(&img, &mut file, &var_name, &format, &lvgl_version) {
+        if let Err(e) = generate_c(&img, &mut file, &var_name, &format, &lvgl_version, args.big_endian) {
             error!("Failed to generate C code: {}", e);
             let _ = std::fs::remove_file(output_path);
             return Err(e);
@@ -314,6 +322,7 @@ fn generate_c<W: Write>(
     var_name: &str,
     format: &ColorFormat,
     lvgl_version: &LvglVersion,
+    big_endian: bool,
 ) -> Result<()> {
     debug!(?format, ?lvgl_version, var_name, "Generating C code");
     write_header(writer, var_name)?;
@@ -321,17 +330,23 @@ fn generate_c<W: Write>(
     let format_const = format_name(format, lvgl_version);
 
     match format {
-        ColorFormat::Indexed4 => write_indexed4(img, writer, var_name, format_const)?,
-        ColorFormat::Indexed8 => write_indexed8(img, writer, var_name, format_const)?,
-        ColorFormat::TrueColor => write_true_color(img, writer, var_name, false, format_const)?,
-        ColorFormat::TrueColorAlpha => write_true_color(img, writer, var_name, true, format_const)?,
-        ColorFormat::Alpha8 => write_alpha8(img, writer, var_name, format_const)?,
-        f => {
+        ColorFormat::Indexed1 => write_indexed(img, writer, var_name, format_const, 1)?,
+        ColorFormat::Indexed2 => write_indexed(img, writer, var_name, format_const, 2)?,
+        ColorFormat::Indexed4 => write_indexed(img, writer, var_name, format_const, 4)?,
+        ColorFormat::Indexed8 => write_indexed(img, writer, var_name, format_const, 8)?,
+        ColorFormat::Alpha1 => write_alpha(img, writer, var_name, format_const, 1)?,
+        ColorFormat::Alpha2 => write_alpha(img, writer, var_name, format_const, 2)?,
+        ColorFormat::Alpha4 => write_alpha(img, writer, var_name, format_const, 4)?,
+        ColorFormat::Alpha8 => write_alpha(img, writer, var_name, format_const, 8)?,
+        ColorFormat::TrueColor => write_true_color(img, writer, var_name, false, format_const, big_endian)?,
+        ColorFormat::TrueColorAlpha => write_true_color(img, writer, var_name, true, format_const, big_endian)?,
+        ColorFormat::TrueColorChroma => {
             return Err(FormatError::NotImplemented {
-                format: format!("{:?}", f),
+                format: "TrueColorChroma".to_string(),
             }
             .into())
         }
+        ColorFormat::Auto => unreachable!(),
     }
 
     debug!("C code generation complete");
@@ -369,22 +384,24 @@ fn write_header<W: Write>(writer: &mut W, var_name: &str) -> Result<()> {
 }
 
 #[instrument(skip(img, writer))]
-fn write_indexed4<W: Write>(
+fn write_indexed<W: Write>(
     img: &DynamicImage,
     writer: &mut W,
     var_name: &str,
     format_const: &str,
+    bpp: u8,
 ) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
-    debug!(w, h, "Writing indexed 4-bit data");
+    let palette_size = 1 << bpp;
+    debug!(w, h, bpp, "Writing indexed data");
 
     writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
 
-    // Palette (16 grayscale levels)
-    for i in 0..16 {
-        let v = (i * 255 / 15) as u8;
+    // Palette (RGBA32 format)
+    for i in 0..palette_size {
+        let v = (i * 255 / (palette_size - 1)) as u8;
         writeln!(
             writer,
             "  0x{:02x}, 0x{:02x}, 0x{:02x}, 0xff, \t/*Color of index {}*/",
@@ -393,56 +410,38 @@ fn write_indexed4<W: Write>(
     }
     writeln!(writer)?;
 
-    // Pixel data (2 pixels per byte)
+    // Pack pixels (MSB first)
     let mut data = Vec::new();
+    let mask = (1 << bpp) - 1;
+    
     for y in 0..h {
-        for x in (0..w).step_by(2) {
-            let p1 = gray.get_pixel(x, y)[0] >> 4;
-            let p2 = if x + 1 < w {
-                gray.get_pixel(x + 1, y)[0] >> 4
+        let mut byte = 0u8;
+        let mut shift = 8 - bpp;
+        
+        for x in 0..w {
+            let pixel = gray.get_pixel(x, y)[0];
+            let index = (pixel >> (8 - bpp)) & mask;
+            byte |= index << shift;
+            
+            if shift == 0 {
+                data.push(byte);
+                byte = 0;
+                shift = 8 - bpp;
             } else {
-                0
-            };
-            data.push((p1 << 4) | p2);
+                shift -= bpp;
+            }
+        }
+        
+        if shift != 8 - bpp {
+            data.push(byte);
         }
     }
 
     write_data_array(writer, &data)?;
     writeln!(writer, "}};\n")?;
 
-    write_descriptor(writer, var_name, w, h, format_const, data.len())?;
-    Ok(())
-}
-
-#[instrument(skip(img, writer))]
-fn write_indexed8<W: Write>(
-    img: &DynamicImage,
-    writer: &mut W,
-    var_name: &str,
-    format_const: &str,
-) -> Result<()> {
-    let gray = img.to_luma8();
-    let (w, h) = gray.dimensions();
-    debug!(w, h, "Writing indexed 8-bit data");
-
-    writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
-        var_name.to_uppercase(), var_name)?;
-
-    // Palette (256 grayscale levels)
-    for i in 0..256 {
-        writeln!(
-            writer,
-            "  0x{:02x}, 0x{:02x}, 0x{:02x}, 0xff, \t/*Color of index {}*/",
-            i, i, i, i
-        )?;
-    }
-    writeln!(writer)?;
-
-    let data: Vec<u8> = gray.pixels().map(|p| p[0]).collect();
-    write_data_array(writer, &data)?;
-    writeln!(writer, "}};\n")?;
-
-    write_descriptor(writer, var_name, w, h, format_const, data.len())?;
+    let total_size = (palette_size * 4) + data.len();
+    write_descriptor(writer, var_name, w, h, format_const, total_size)?;
     Ok(())
 }
 
@@ -453,48 +452,95 @@ fn write_true_color<W: Write>(
     var_name: &str,
     alpha: bool,
     format_const: &str,
+    big_endian: bool,
 ) -> Result<()> {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
-    debug!(w, h, alpha, "Writing true color data");
+    debug!(w, h, alpha, big_endian, "Writing true color data");
+
+    writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
+        var_name.to_uppercase(), var_name)?;
+
+    let mut rgb_data = Vec::new();
+    let mut alpha_data = Vec::new();
+    
+    for pixel in rgba.pixels() {
+        let Rgba([r, g, b, a]) = *pixel;
+        // RGB565 format
+        let rgb565 = ((r as u16 & 0xF8) << 8) | ((g as u16 & 0xFC) << 3) | (b as u16 >> 3);
+        
+        if big_endian {
+            rgb_data.push((rgb565 >> 8) as u8);
+            rgb_data.push((rgb565 & 0xFF) as u8);
+        } else {
+            rgb_data.push((rgb565 & 0xFF) as u8);
+            rgb_data.push((rgb565 >> 8) as u8);
+        }
+        
+        if alpha {
+            alpha_data.push(a);
+        }
+    }
+
+    write_data_array(writer, &rgb_data)?;
+    if alpha {
+        writeln!(writer)?;
+        write_data_array(writer, &alpha_data)?;
+    }
+    writeln!(writer, "}};\n")?;
+
+    write_descriptor(writer, var_name, w, h, format_const, rgb_data.len() + alpha_data.len())?;
+    Ok(())
+}
+
+#[instrument(skip(img, writer))]
+fn write_alpha<W: Write>(
+    img: &DynamicImage,
+    writer: &mut W,
+    var_name: &str,
+    format_const: &str,
+    bpp: u8,
+) -> Result<()> {
+    let gray = img.to_luma8();
+    let (w, h) = gray.dimensions();
+    debug!(w, h, bpp, "Writing alpha data");
 
     writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
         var_name.to_uppercase(), var_name)?;
 
     let mut data = Vec::new();
-    for pixel in rgba.pixels() {
-        let Rgba([r, g, b, a]) = *pixel;
-        // RGB565 format
-        let rgb565 = ((r as u16 & 0xF8) << 8) | ((g as u16 & 0xFC) << 3) | (b as u16 >> 3);
-        data.push((rgb565 & 0xFF) as u8);
-        data.push((rgb565 >> 8) as u8);
-        if alpha {
-            data.push(a);
+    
+    if bpp == 8 {
+        // A8: one byte per pixel
+        data = gray.pixels().map(|p| p[0]).collect();
+    } else {
+        // A1/A2/A4: pack pixels (MSB first)
+        let mask = (1 << bpp) - 1;
+        
+        for y in 0..h {
+            let mut byte = 0u8;
+            let mut shift = 8 - bpp;
+            
+            for x in 0..w {
+                let pixel = gray.get_pixel(x, y)[0];
+                let value = (pixel >> (8 - bpp)) & mask;
+                byte |= value << shift;
+                
+                if shift == 0 {
+                    data.push(byte);
+                    byte = 0;
+                    shift = 8 - bpp;
+                } else {
+                    shift -= bpp;
+                }
+            }
+            
+            if shift != 8 - bpp {
+                data.push(byte);
+            }
         }
     }
 
-    write_data_array(writer, &data)?;
-    writeln!(writer, "}};\n")?;
-
-    write_descriptor(writer, var_name, w, h, format_const, data.len())?;
-    Ok(())
-}
-
-#[instrument(skip(img, writer))]
-fn write_alpha8<W: Write>(
-    img: &DynamicImage,
-    writer: &mut W,
-    var_name: &str,
-    format_const: &str,
-) -> Result<()> {
-    let gray = img.to_luma8();
-    let (w, h) = gray.dimensions();
-    debug!(w, h, "Writing alpha 8-bit data");
-
-    writeln!(writer, "const LV_ATTRIBUTE_MEM_ALIGN LV_ATTRIBUTE_LARGE_CONST LV_ATTRIBUTE_IMG_{} uint8_t {}_map[] = {{", 
-        var_name.to_uppercase(), var_name)?;
-
-    let data: Vec<u8> = gray.pixels().map(|p| p[0]).collect();
     write_data_array(writer, &data)?;
     writeln!(writer, "}};\n")?;
 

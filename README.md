@@ -57,6 +57,9 @@ png2lvgl input.png -o output.c
 # Use 4-bit indexed grayscale (16 colors)
 png2lvgl input.png -f indexed4
 
+# Generate big-endian RGB565 (for big-endian systems)
+png2lvgl input.png -f true-color --big-endian
+
 # Overwrite existing file
 png2lvgl input.png --overwrite
 ```
@@ -83,13 +86,25 @@ png2lvgl icon.png --lvgl-v8 -o ui/icon.c
 
 ## Supported Formats
 
-| Format | Description | Use Case |
-|--------|-------------|----------|
-| `true-color` | RGB565 | Full color images |
-| `true-color-alpha` | RGB565 + Alpha | Images with transparency |
-| `true-color-chroma` | RGB565 + Chroma key | Transparent color key |
-| `indexed1/2/4/8` | Palette (2/4/16/256 colors) | Small images, icons |
-| `alpha1/2/4/8` | Alpha only (1/2/4/8 bit) | Masks, monochrome icons |
+| Format | Description | Use Case | Status |
+|--------|-------------|----------|--------|
+| `true-color` | RGB565 | Full color images | ✅ |
+| `true-color-alpha` | RGB565 + Alpha | Images with transparency | ✅ |
+| `true-color-chroma` | RGB565 + Chroma key | Transparent color key | ❌ Not implemented |
+| `indexed1/2/4/8` | Palette (2/4/16/256 colors) | Small images, icons | ✅ |
+| `alpha1/2/4/8` | Alpha only (1/2/4/8 bit) | Masks, monochrome icons | ✅ |
+
+## Endianness
+
+RGB565 formats (`true-color` and `true-color-alpha`) are generated in **little-endian** byte order by default, which matches most embedded systems (ARM Cortex-M, ESP32, etc.).
+
+For **big-endian systems** (some PowerPC, MIPS, older ARM), use the `--big-endian` flag:
+
+```bash
+png2lvgl input.png -f true-color --big-endian
+```
+
+**Note:** Indexed and alpha-only formats are not affected by endianness as they don't use RGB565 encoding.
 
 ## Output Format
 
