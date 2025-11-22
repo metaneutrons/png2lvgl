@@ -339,7 +339,7 @@ fn generate_c<W: Write>(
     big_endian: bool,
 ) -> Result<()> {
     debug!(?format, ?lvgl_version, var_name, "Generating C code");
-    write_header(writer, var_name)?;
+    write_header(writer, var_name, format, big_endian)?;
 
     let format_const = format_name(format, lvgl_version);
 
@@ -371,7 +371,15 @@ fn generate_c<W: Write>(
     Ok(())
 }
 
-fn write_header<W: Write>(writer: &mut W, var_name: &str) -> Result<()> {
+fn write_header<W: Write>(writer: &mut W, var_name: &str, format: &ColorFormat, big_endian: bool) -> Result<()> {
+    // Add endianness comment for RGB565 formats
+    if matches!(format, ColorFormat::TrueColor | ColorFormat::TrueColorAlpha) {
+        writeln!(writer, "/*")?;
+        writeln!(writer, " * RGB565 byte order: {}", if big_endian { "big-endian" } else { "little-endian" })?;
+        writeln!(writer, " */")?;
+        writeln!(writer)?;
+    }
+    
     writeln!(writer, "#ifdef __has_include")?;
     writeln!(writer, "    #if __has_include(\"lvgl.h\")")?;
     writeln!(writer, "        #ifndef LV_LVGL_H_INCLUDE_SIMPLE")?;
