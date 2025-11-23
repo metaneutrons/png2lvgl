@@ -345,6 +345,7 @@ fn format_name(format: &ColorFormat, lvgl_version: &LvglVersion) -> &'static str
 }
 
 #[instrument(skip(img, writer))]
+#[allow(clippy::too_many_arguments)]
 fn generate_c<W: Write>(
     img: &DynamicImage,
     writer: &mut W,
