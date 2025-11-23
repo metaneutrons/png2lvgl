@@ -61,7 +61,7 @@ impl Args {
     }
 }
 
-#[derive(Clone, Debug, clap::ValueEnum)]
+#[derive(Copy, Clone, Debug, clap::ValueEnum)]
 enum LvglVersion {
     V8,
     V9,
@@ -168,6 +168,12 @@ fn run() -> Result<()> {
         .unwrap_or("image")
         .replace('-', "_");
 
+    let source_filename = args
+        .input
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("unknown.png");
+
     if args.stdout {
         let stdout = std::io::stdout();
         let mut handle = stdout.lock();
@@ -178,12 +184,19 @@ fn run() -> Result<()> {
             &format,
             &lvgl_version,
             args.big_endian,
+            source_filename,
+            "stdout",
         ) {
             error!("Failed to generate C code: {}", e);
             return Err(e);
         }
     } else {
         let output_path = output.as_ref().unwrap();
+        let output_filename = output_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("output.c");
+
         let mut file = match File::create(output_path) {
             Ok(f) => f,
             Err(e) => {
@@ -199,6 +212,8 @@ fn run() -> Result<()> {
             &format,
             &lvgl_version,
             args.big_endian,
+            source_filename,
+            output_filename,
         ) {
             error!("Failed to generate C code: {}", e);
             let _ = std::fs::remove_file(output_path);
@@ -337,27 +352,56 @@ fn generate_c<W: Write>(
     format: &ColorFormat,
     lvgl_version: &LvglVersion,
     big_endian: bool,
+    source_file: &str,
+    output_file: &str,
 ) -> Result<()> {
     debug!(?format, ?lvgl_version, var_name, "Generating C code");
-    write_header(writer, var_name, format, big_endian)?;
+    write_header(
+        writer,
+        var_name,
+        format,
+        big_endian,
+        source_file,
+        output_file,
+    )?;
 
     let format_const = format_name(format, lvgl_version);
 
     match format {
-        ColorFormat::Indexed1 => write_indexed(img, writer, var_name, format_const, 1)?,
-        ColorFormat::Indexed2 => write_indexed(img, writer, var_name, format_const, 2)?,
-        ColorFormat::Indexed4 => write_indexed(img, writer, var_name, format_const, 4)?,
-        ColorFormat::Indexed8 => write_indexed(img, writer, var_name, format_const, 8)?,
-        ColorFormat::Alpha1 => write_alpha(img, writer, var_name, format_const, 1)?,
-        ColorFormat::Alpha2 => write_alpha(img, writer, var_name, format_const, 2)?,
-        ColorFormat::Alpha4 => write_alpha(img, writer, var_name, format_const, 4)?,
-        ColorFormat::Alpha8 => write_alpha(img, writer, var_name, format_const, 8)?,
-        ColorFormat::TrueColor => {
-            write_true_color(img, writer, var_name, false, format_const, big_endian)?
+        ColorFormat::Indexed1 => {
+            write_indexed(img, writer, var_name, format_const, 1, lvgl_version)?
         }
-        ColorFormat::TrueColorAlpha => {
-            write_true_color(img, writer, var_name, true, format_const, big_endian)?
+        ColorFormat::Indexed2 => {
+            write_indexed(img, writer, var_name, format_const, 2, lvgl_version)?
         }
+        ColorFormat::Indexed4 => {
+            write_indexed(img, writer, var_name, format_const, 4, lvgl_version)?
+        }
+        ColorFormat::Indexed8 => {
+            write_indexed(img, writer, var_name, format_const, 8, lvgl_version)?
+        }
+        ColorFormat::Alpha1 => write_alpha(img, writer, var_name, format_const, 1, lvgl_version)?,
+        ColorFormat::Alpha2 => write_alpha(img, writer, var_name, format_const, 2, lvgl_version)?,
+        ColorFormat::Alpha4 => write_alpha(img, writer, var_name, format_const, 4, lvgl_version)?,
+        ColorFormat::Alpha8 => write_alpha(img, writer, var_name, format_const, 8, lvgl_version)?,
+        ColorFormat::TrueColor => write_true_color(
+            img,
+            writer,
+            var_name,
+            false,
+            format_const,
+            big_endian,
+            lvgl_version,
+        )?,
+        ColorFormat::TrueColorAlpha => write_true_color(
+            img,
+            writer,
+            var_name,
+            true,
+            format_const,
+            big_endian,
+            lvgl_version,
+        )?,
         ColorFormat::TrueColorChroma => {
             return Err(FormatError::NotImplemented {
                 format: "TrueColorChroma".to_string(),
@@ -376,22 +420,42 @@ fn write_header<W: Write>(
     var_name: &str,
     format: &ColorFormat,
     big_endian: bool,
+    source_file: &str,
+    output_file: &str,
 ) -> Result<()> {
-    // Add endianness comment for RGB565 formats
+    let version = built_info::GIT_VERSION.unwrap_or(built_info::PKG_VERSION);
+
+    writeln!(writer, "/**")?;
+    writeln!(
+        writer,
+        " * {} - LVGL image asset of {}",
+        output_file, source_file
+    )?;
+    writeln!(writer, " * ")?;
+    writeln!(
+        writer,
+        " * Generated by png2lvgl v{} (https://github.com/metaneutrons/png2lvgl)",
+        version
+    )?;
+    writeln!(writer, " * ")?;
+    writeln!(writer, " * DO NOT EDIT THIS FILE MANUALLY")?;
+    writeln!(writer, " * ")?;
+    writeln!(writer, " * Format: {}", format_description(format))?;
+
     if matches!(format, ColorFormat::TrueColor | ColorFormat::TrueColorAlpha) {
-        writeln!(writer, "/*")?;
         writeln!(
             writer,
-            " * RGB565 byte order: {}",
+            " * RGB565 Byte Order: {}",
             if big_endian {
                 "big-endian"
             } else {
                 "little-endian"
             }
         )?;
-        writeln!(writer, " */")?;
-        writeln!(writer)?;
     }
+
+    writeln!(writer, " */")?;
+    writeln!(writer)?;
 
     writeln!(writer, "#ifdef __has_include")?;
     writeln!(writer, "    #if __has_include(\"lvgl.h\")")?;
@@ -422,6 +486,23 @@ fn write_header<W: Write>(
     Ok(())
 }
 
+fn format_description(format: &ColorFormat) -> &str {
+    match format {
+        ColorFormat::Indexed1 => "1-bit indexed (2 colors)",
+        ColorFormat::Indexed2 => "2-bit indexed (4 colors)",
+        ColorFormat::Indexed4 => "4-bit indexed (16 colors)",
+        ColorFormat::Indexed8 => "8-bit indexed (256 colors)",
+        ColorFormat::Alpha1 => "1-bit alpha (2 levels)",
+        ColorFormat::Alpha2 => "2-bit alpha (4 levels)",
+        ColorFormat::Alpha4 => "4-bit alpha (16 levels)",
+        ColorFormat::Alpha8 => "8-bit alpha (256 levels)",
+        ColorFormat::TrueColor => "RGB565 true color",
+        ColorFormat::TrueColorAlpha => "RGB565 true color + alpha",
+        ColorFormat::TrueColorChroma => "RGB565 true color + chroma key",
+        ColorFormat::Auto => "Auto-detected",
+    }
+}
+
 #[instrument(skip(img, writer))]
 fn write_indexed<W: Write>(
     img: &DynamicImage,
@@ -429,6 +510,7 @@ fn write_indexed<W: Write>(
     var_name: &str,
     format_const: &str,
     bpp: u8,
+    lvgl_version: &LvglVersion,
 ) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
@@ -480,7 +562,15 @@ fn write_indexed<W: Write>(
     writeln!(writer, "}};\n")?;
 
     let total_size = (palette_size * 4) + data.len();
-    write_descriptor(writer, var_name, w, h, format_const, total_size)?;
+    write_descriptor(
+        writer,
+        var_name,
+        w,
+        h,
+        format_const,
+        total_size,
+        *lvgl_version,
+    )?;
     Ok(())
 }
 
@@ -492,6 +582,7 @@ fn write_true_color<W: Write>(
     alpha: bool,
     format_const: &str,
     big_endian: bool,
+    lvgl_version: &LvglVersion,
 ) -> Result<()> {
     let rgba = img.to_rgba8();
     let (w, h) = rgba.dimensions();
@@ -535,6 +626,7 @@ fn write_true_color<W: Write>(
         h,
         format_const,
         rgb_data.len() + alpha_data.len(),
+        *lvgl_version,
     )?;
     Ok(())
 }
@@ -546,6 +638,7 @@ fn write_alpha<W: Write>(
     var_name: &str,
     format_const: &str,
     bpp: u8,
+    lvgl_version: &LvglVersion,
 ) -> Result<()> {
     let gray = img.to_luma8();
     let (w, h) = gray.dimensions();
@@ -590,7 +683,15 @@ fn write_alpha<W: Write>(
     write_data_array(writer, &data)?;
     writeln!(writer, "}};\n")?;
 
-    write_descriptor(writer, var_name, w, h, format_const, data.len())?;
+    write_descriptor(
+        writer,
+        var_name,
+        w,
+        h,
+        format_const,
+        data.len(),
+        *lvgl_version,
+    )?;
     Ok(())
 }
 
@@ -619,11 +720,17 @@ fn write_descriptor<W: Write>(
     h: u32,
     cf: &str,
     size: usize,
+    lvgl_version: LvglVersion,
 ) -> Result<()> {
     writeln!(writer, "const lv_img_dsc_t {} = {{", var_name)?;
     writeln!(writer, "  .header.cf = {},", cf)?;
-    writeln!(writer, "  .header.always_zero = 0,")?;
-    writeln!(writer, "  .header.reserved = 0,")?;
+
+    // LVGL v8 requires these fields, v9 doesn't have them
+    if matches!(lvgl_version, LvglVersion::V8) {
+        writeln!(writer, "  .header.always_zero = 0,")?;
+        writeln!(writer, "  .header.reserved = 0,")?;
+    }
+
     writeln!(writer, "  .header.w = {},", w)?;
     writeln!(writer, "  .header.h = {},", h)?;
     writeln!(writer, "  .data_size = {},", size)?;
