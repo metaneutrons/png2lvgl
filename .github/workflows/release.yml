@@ -20,7 +20,7 @@ jobs:
     name: Set version from tag
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@stable
       
       - name: Update version in Cargo.toml
@@ -66,7 +66,7 @@ jobs:
           - os: macos-latest
             target: aarch64-apple-darwin
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       
       - name: Download updated Cargo files
         uses: actions/download-artifact@v6
@@ -159,7 +159,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Determine version and pre-release status
         id: version
@@ -254,7 +254,7 @@ jobs:
     runs-on: ubuntu-latest
     if: needs.release.outputs.is_prerelease == 'false'
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       
       - name: Download release artifacts
         uses: actions/download-artifact@v6
@@ -335,7 +335,7 @@ jobs:
     needs: [set-version, build, release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       
       - name: Download updated Cargo files
         uses: actions/download-artifact@v6
@@ -350,7 +350,7 @@ jobs:
     needs: [release]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       
       - name: Get version
         id: version
