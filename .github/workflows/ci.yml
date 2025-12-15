@@ -102,7 +102,7 @@ jobs:
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --release --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: png2lvgl-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/png2lvgl${{ matrix.os == 'windows-latest' && '.exe' || '' }}
