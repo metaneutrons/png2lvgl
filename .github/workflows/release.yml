@@ -69,7 +69,7 @@ jobs:
       - uses: actions/checkout@v5
       
       - name: Download updated Cargo files
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: cargo-files
       
@@ -196,7 +196,7 @@ jobs:
             echo "Tag ${{ steps.version.outputs.tag }} already exists, skipping creation"
           fi
 
-      - uses: actions/download-artifact@v6
+      - uses: actions/download-artifact@v7
         with:
           path: artifacts
 
@@ -257,7 +257,7 @@ jobs:
       - uses: actions/checkout@v5
       
       - name: Download release artifacts
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           path: artifacts
       
@@ -338,7 +338,7 @@ jobs:
       - uses: actions/checkout@v5
       
       - name: Download updated Cargo files
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v7
         with:
           name: cargo-files
       
