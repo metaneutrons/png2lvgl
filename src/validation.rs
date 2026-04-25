@@ -1,13 +1,22 @@
-use crate::error::{Result, ValidationError};
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2025 Fabian Schmieder
+
 use std::fs;
+use std::io::Read;
 use std::path::Path;
+
 use tracing::{debug, warn};
+
+use crate::error::{Result, ValidationError};
 
 const MAX_WIDTH: u32 = 8192;
 const MAX_HEIGHT: u32 = 8192;
 const MIN_WIDTH: u32 = 1;
 const MIN_HEIGHT: u32 = 1;
-const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024; // 100MB
+/// 100 MiB.
+const MAX_FILE_SIZE: u64 = 100 * 1024 * 1024;
+/// PNG magic bytes.
+const PNG_HEADER: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
 pub fn validate_input_file(path: &Path) -> Result<()> {
     debug!(?path, "Validating input file");
@@ -35,12 +44,11 @@ pub fn validate_input_file(path: &Path) -> Result<()> {
         path: path.to_path_buf(),
     })?;
 
-    let mut header = [0u8; 8];
-    use std::io::Read;
+    let mut header = [0u8; PNG_HEADER.len()];
     file.read_exact(&mut header)
         .map_err(|_| ValidationError::InvalidPngHeader)?;
 
-    if &header != b"\x89PNG\r\n\x1a\n" {
+    if &header != PNG_HEADER {
         return Err(ValidationError::InvalidPngHeader.into());
     }
 
@@ -86,10 +94,7 @@ pub fn validate_output_path(path: &Path, overwrite: bool) -> Result<()> {
     }
 
     if let Some(parent) = path.parent() {
-        if parent.as_os_str().is_empty() {
-            return Ok(());
-        }
-        if !parent.exists() || fs::metadata(parent).is_err() {
+        if !parent.as_os_str().is_empty() && (!parent.exists() || fs::metadata(parent).is_err()) {
             return Err(ValidationError::OutputNotWritable {
                 path: parent.to_path_buf(),
             }

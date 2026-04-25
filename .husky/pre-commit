@@ -1,10 +1,14 @@
 #!/usr/bin/env sh
+set -e
 
 # Format Rust code
 cargo fmt --all
 
 # Stage any formatting changes
 git diff --name-only | grep '\.rs$' | xargs -r git add
+
+# Clippy lint check
+cargo clippy --all-targets --all-features -- -D warnings
 
 # Check GitHub workflows if changed
 if git diff --cached --name-only | grep -q '^\.github/workflows/'; then

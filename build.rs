@@ -1,11 +1,18 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// Copyright (C) 2025 Fabian Schmieder
+
+//! Build script: generates build info and manpage.
+//!
+//! NOTE: The manpage CLI definition is intentionally duplicated here because
+//! `build.rs` cannot import from `src/`. This is a known Cargo limitation.
+//! Keep `build_cli()` in sync with `Args` in `src/main.rs`.
+
 use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    // Generate build info
     built::write_built_file().expect("Failed to acquire build-time information");
 
-    // Generate manpage
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").unwrap());
     let cmd = build_cli();
 
@@ -17,8 +24,100 @@ fn main() {
     let mut buffer = Vec::new();
     man.render(&mut buffer).expect("Failed to render manpage");
 
-    // Add custom sections
-    let custom_sections = r#"
+    let mut full_content = String::from_utf8(buffer).unwrap();
+    full_content.push_str(MANPAGE_EXTRA_SECTIONS);
+
+    std::fs::write(out_dir.join("png2lvgl.1"), full_content).expect("Failed to write manpage");
+
+    println!("cargo:rerun-if-changed=src/main.rs");
+    println!("cargo:rerun-if-changed=build.rs");
+}
+
+/// Build the CLI definition for manpage generation.
+///
+/// This MUST mirror the `Args` struct in `src/main.rs`. Any flag added there
+/// must be added here as well.
+fn build_cli() -> clap::Command {
+    use clap::{Arg, ArgAction, Command};
+
+    Command::new("png2lvgl")
+        .version(env!("CARGO_PKG_VERSION"))
+        .about("Convert PNG images to LVGL C arrays")
+        .long_about(
+            "png2lvgl converts PNG images to LVGL (Light and Versatile Graphics Library) \
+             compatible C arrays. It supports multiple color formats including true color, \
+             indexed palettes, and alpha-only modes, making it ideal for embedded systems \
+             and resource-constrained environments.",
+        )
+        .arg(
+            Arg::new("input")
+                .help("Input PNG file")
+                .required(true)
+                .value_name("INPUT"),
+        )
+        .arg(
+            Arg::new("output")
+                .short('o')
+                .long("output")
+                .help("Output C file (defaults to input filename with .c extension)")
+                .value_name("OUTPUT"),
+        )
+        .arg(
+            Arg::new("stdout")
+                .long("stdout")
+                .help("Write to stdout instead of file")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("format")
+                .short('f')
+                .long("format")
+                .help("Color format")
+                .value_name("FORMAT")
+                .default_value("auto")
+                .value_parser([
+                    "auto",
+                    "true-color",
+                    "true-color-alpha",
+                    "true-color-chroma",
+                    "indexed1",
+                    "indexed2",
+                    "indexed4",
+                    "indexed8",
+                    "alpha1",
+                    "alpha2",
+                    "alpha4",
+                    "alpha8",
+                ]),
+        )
+        .arg(
+            Arg::new("overwrite")
+                .long("overwrite")
+                .help("Overwrite existing output file")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("lvgl-v8")
+                .long("lvgl-v8")
+                .help("Target LVGL 8.x (uses LV_IMG_CF_* constants)")
+                .action(ArgAction::SetTrue)
+                .conflicts_with("lvgl-v9"),
+        )
+        .arg(
+            Arg::new("lvgl-v9")
+                .long("lvgl-v9")
+                .help("Target LVGL 9.x (uses LV_COLOR_FORMAT_* constants, default)")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("big-endian")
+                .long("big-endian")
+                .help("Generate big-endian RGB565 (for big-endian systems)")
+                .action(ArgAction::SetTrue),
+        )
+}
+
+const MANPAGE_EXTRA_SECTIONS: &str = r"
 .SH EXAMPLES
 .TP
 Convert a PNG with automatic format detection (LVGL 9.x):
@@ -109,64 +208,4 @@ There is NO WARRANTY, to the extent permitted by law.
 LVGL documentation: https://docs.lvgl.io/
 .br
 Project homepage: https://github.com/metaneutrons/png2lvgl
-"#;
-
-    let mut full_content = String::from_utf8(buffer).unwrap();
-    full_content.push_str(custom_sections);
-
-    std::fs::write(out_dir.join("png2lvgl.1"), full_content).expect("Failed to write manpage");
-
-    println!("cargo:rerun-if-changed=src/main.rs");
-    println!("cargo:rerun-if-changed=build.rs");
-}
-
-fn build_cli() -> clap::Command {
-    use clap::{Arg, Command};
-
-    Command::new("png2lvgl")
-        .version(env!("CARGO_PKG_VERSION"))
-        .about("Convert PNG images to LVGL C arrays")
-        .long_about("png2lvgl converts PNG images to LVGL (Light and Versatile Graphics Library) compatible C arrays. It supports multiple color formats including true color, indexed palettes, and alpha-only modes, making it ideal for embedded systems and resource-constrained environments.")
-        .arg(Arg::new("input")
-            .help("Input PNG file")
-            .required(true)
-            .value_name("INPUT"))
-        .arg(Arg::new("output")
-            .short('o')
-            .long("output")
-            .help("Output C file (defaults to input filename with .c extension)")
-            .value_name("OUTPUT"))
-        .arg(Arg::new("stdout")
-            .long("stdout")
-            .help("Write to stdout instead of file")
-            .action(clap::ArgAction::SetTrue))
-        .arg(Arg::new("format")
-            .short('f')
-            .long("format")
-            .help("Color format")
-            .long_help("Specify the color format for conversion. Available formats:\n\
-                       auto - Automatically detect optimal format (default)\n\
-                       true-color - RGB565 format (16-bit per pixel)\n\
-                       true-color-alpha - RGB565 + 8-bit alpha (24-bit per pixel)\n\
-                       true-color-chroma - RGB565 with chroma key\n\
-                       indexed1/2/4/8 - Palette-based (2/4/16/256 colors)\n\
-                       alpha1/2/4/8 - Alpha only (2/4/16/256 levels)")
-            .value_name("FORMAT")
-            .default_value("auto")
-            .value_parser(["auto", "true-color", "true-color-alpha", "true-color-chroma", 
-                          "indexed1", "indexed2", "indexed4", "indexed8",
-                          "alpha1", "alpha2", "alpha4", "alpha8"]))
-        .arg(Arg::new("overwrite")
-            .long("overwrite")
-            .help("Overwrite existing output file")
-            .action(clap::ArgAction::SetTrue))
-        .arg(Arg::new("lvgl-v8")
-            .long("lvgl-v8")
-            .help("Target LVGL 8.x (uses LV_IMG_CF_* constants)")
-            .action(clap::ArgAction::SetTrue)
-            .conflicts_with("lvgl-v9"))
-        .arg(Arg::new("lvgl-v9")
-            .long("lvgl-v9")
-            .help("Target LVGL 9.x (uses LV_COLOR_FORMAT_* constants, default)")
-            .action(clap::ArgAction::SetTrue))
-}
+";
