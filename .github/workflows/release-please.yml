@@ -1,4 +1,4 @@
-name: Release Please
+name: Release
 
 on:
   push:
@@ -7,6 +7,10 @@ on:
 permissions:
   contents: write
   pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
   release-please:
@@ -21,3 +25,212 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: [release-please]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-musl
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+          - os: windows-latest
+            target: aarch64-pc-windows-msvc
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu
+          case "${{ matrix.target }}" in
+            *musl*) sudo apt-get install -y musl-tools ;;
+          esac
+          mkdir -p .cargo
+          cat >> .cargo/config.toml << 'EOF'
+          [target.aarch64-unknown-linux-gnu]
+          linker = "aarch64-linux-gnu-gcc"
+
+          [target.aarch64-unknown-linux-musl]
+          linker = "aarch64-linux-gnu-gcc"
+          EOF
+
+      - name: Install musl tools
+        if: matrix.target == 'x86_64-unknown-linux-musl'
+        run: sudo apt-get install -y musl-tools
+
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Build Debian package
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          cargo install cargo-deb
+          cargo deb --target ${{ matrix.target }} --no-build
+          cp target/${{ matrix.target }}/debian/*.deb .
+
+      - name: Create archive
+        shell: bash
+        run: |
+          VERSION=${{ needs.release-please.outputs.version }}
+          BIN_NAME=png2lvgl
+
+          case "${{ matrix.target }}" in
+            *windows*)
+              ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.zip"
+              cp target/${{ matrix.target }}/release/${BIN_NAME}.exe .
+              7z a "$ARCHIVE" "${BIN_NAME}.exe" README.md LICENSE
+              ;;
+            *)
+              ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.tar.gz"
+              cp target/${{ matrix.target }}/release/${BIN_NAME} .
+              chmod +x "${BIN_NAME}"
+              mkdir -p share/man/man1
+              find target/${{ matrix.target }}/release/build/png2lvgl-*/out/png2lvgl.1 -exec cp {} share/man/man1/ \;
+              tar czf "$ARCHIVE" "${BIN_NAME}" README.md LICENSE share/
+              ;;
+          esac
+
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.ARCHIVE }}
+            *.deb
+          if-no-files-found: ignore
+
+  upload-assets:
+    name: Upload release assets
+    needs: [release-please, build]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Upload assets to GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG=${{ needs.release-please.outputs.tag_name }}
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.deb" \) \
+            -exec gh release upload "$TAG" {} \;
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [release-please, build]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  update-homebrew:
+    name: Update Homebrew tap
+    needs: [release-please, upload-assets]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          path: artifacts
+
+      - name: Calculate checksums and update tap
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          VERSION=${{ needs.release-please.outputs.version }}
+
+          X64_FILE=$(find artifacts -name "png2lvgl-${VERSION}-x86_64-apple-darwin.tar.gz")
+          ARM64_FILE=$(find artifacts -name "png2lvgl-${VERSION}-aarch64-apple-darwin.tar.gz")
+
+          X64_SHA=$(sha256sum "$X64_FILE" | cut -d' ' -f1)
+          ARM64_SHA=$(sha256sum "$ARM64_FILE" | cut -d' ' -f1)
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/metaneutrons/homebrew-tap.git"
+          cd homebrew-tap
+          mkdir -p Formula
+
+          cat > Formula/png2lvgl.rb << EOF
+          class Png2lvgl < Formula
+            desc "Convert PNG images to LVGL C arrays"
+            homepage "https://github.com/metaneutrons/png2lvgl"
+            version "${VERSION}"
+            license "GPL-3.0"
+
+            on_macos do
+              if Hardware::CPU.intel?
+                url "https://github.com/metaneutrons/png2lvgl/releases/download/v${VERSION}/png2lvgl-${VERSION}-x86_64-apple-darwin.tar.gz"
+                sha256 "${X64_SHA}"
+              else
+                url "https://github.com/metaneutrons/png2lvgl/releases/download/v${VERSION}/png2lvgl-${VERSION}-aarch64-apple-darwin.tar.gz"
+                sha256 "${ARM64_SHA}"
+              end
+            end
+
+            def install
+              bin.install "png2lvgl"
+              man1.install "share/man/man1/png2lvgl.1"
+            end
+
+            test do
+              assert_match version.to_s, shell_output("#{bin}/png2lvgl --version")
+            end
+          end
+          EOF
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/png2lvgl.rb
+          git commit -m "Update png2lvgl to ${VERSION}"
+          git push
+
+  publish-aur:
+    name: Publish to AUR
+    needs: [release-please, upload-assets]
+    if: ${{ needs.release-please.outputs.release_created }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Update PKGBUILD version
+        run: |
+          VERSION=${{ needs.release-please.outputs.version }}
+          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" aur/PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" aur/PKGBUILD
+
+      - name: Publish to AUR
+        uses: KSXGitHub/github-actions-deploy-aur@v4.1.1
+        with:
+          pkgname: png2lvgl
+          pkgbuild: ./aur/PKGBUILD
+          commit_username: metaneutrons
+          commit_email: aur@metaneutrons.github.io
+          ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          commit_message: "Update to ${{ needs.release-please.outputs.version }}"
+          ssh_keyscan_types: rsa,ecdsa,ed25519
