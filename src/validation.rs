@@ -93,13 +93,14 @@ pub fn validate_output_path(path: &Path, overwrite: bool) -> Result<()> {
         .into());
     }
 
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() && (!parent.exists() || fs::metadata(parent).is_err()) {
-            return Err(ValidationError::OutputNotWritable {
-                path: parent.to_path_buf(),
-            }
-            .into());
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+        && (!parent.exists() || fs::metadata(parent).is_err())
+    {
+        return Err(ValidationError::OutputNotWritable {
+            path: parent.to_path_buf(),
         }
+        .into());
     }
 
     if let Some(name) = path.file_name() {
