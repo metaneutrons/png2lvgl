@@ -26,6 +26,9 @@ $RECYCLE.BIN/
 *.swo
 *~
 
+# Node (husky and commitlint tooling)
+node_modules/
+
 # Project specific
 *.c
 *.png
