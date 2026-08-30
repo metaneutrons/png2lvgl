@@ -32,9 +32,32 @@ brew tap metaneutrons/tap
 brew install png2lvgl
 ```
 
+### Arch Linux (AUR)
+
+```bash
+yay -S png2lvgl
+```
+
+### Debian and Ubuntu
+
+Download the `.deb` matching your architecture from the
+[latest release](https://github.com/metaneutrons/png2lvgl/releases/latest) and install it:
+
+```bash
+sudo dpkg -i png2lvgl_*_amd64.deb
+```
+
 ### Pre-built Binaries
 
 Download the latest release for your platform from [GitHub Releases](https://github.com/metaneutrons/png2lvgl/releases).
+
+Every release ships a `SHA256SUMS` inventory and GitHub build provenance
+attestations for each payload. To verify what you downloaded:
+
+```bash
+sha256sum --check --ignore-missing SHA256SUMS
+gh attestation verify png2lvgl-*.tar.gz --repo metaneutrons/png2lvgl
+```
 
 ### From Source
 
