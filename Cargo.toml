@@ -11,6 +11,18 @@ homepage = "https://github.com/metaneutrons/png2lvgl"
 readme = "README.md"
 keywords = ["lvgl", "embedded", "graphics", "image", "converter"]
 categories = ["command-line-utilities", "embedded", "graphics"]
+# node_modules is tracked in the repository for the husky and commitlint hooks,
+# so cargo would otherwise package it. Up to and including 0.3.5 that made the
+# published crate 6.17 MB of which 6387 of 6421 files were node_modules.
+exclude = [
+    "node_modules/",
+    ".husky/",
+    ".github/",
+    "scripts/",
+    "package.json",
+    "package-lock.json",
+    "commitlint.config.js",
+]
 
 [package.metadata.deb]
 maintainer = "metaneutrons"
@@ -40,14 +52,14 @@ nursery = { level = "deny", priority = -1 }
 cargo = { level = "deny", priority = -1 }
 
 [dependencies]
-clap = { version = "=4.6.1", features = ["derive"] }
+clap = { version = "=4.6.3", features = ["derive"] }
 image = { version = "=0.25.10", default-features = false, features = ["png"] }
-thiserror = "=2.0.18"
+thiserror = "=2.0.19"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
 
 [build-dependencies]
-built = { version = "=0.8.0", features = ["git2"] }
-clap = { version = "=4.6.1", features = ["derive"] }
+built = { version = "=0.8.1", features = ["git2"] }
+clap = { version = "=4.6.3", features = ["derive"] }
 clap_mangen = "=0.3.0"
-chrono = "=0.4.44"
+chrono = "=0.4.45"

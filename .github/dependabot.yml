@@ -17,6 +17,12 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    ignore:
+      # The MSRV job pins dtolnay/rust-toolchain@1.88 deliberately. For this
+      # action the ref selects the toolchain to test against, it is not a
+      # version to keep current, so a bump would silently raise the minimum
+      # supported Rust version instead of updating an action.
+      - dependency-name: "dtolnay/rust-toolchain"
 
   - package-ecosystem: "npm"
     directory: "/"
