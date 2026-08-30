@@ -22,6 +22,9 @@ Be respectful and constructive in all interactions.
 # Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
+# Install the commit hook tooling (husky and commitlint)
+npm install
+
 # Build the project
 cargo build
 
