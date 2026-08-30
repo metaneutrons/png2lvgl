@@ -19,7 +19,7 @@ use format::{ColorFormat, LvglVersion};
 
 #[derive(Parser)]
 #[command(name = "png2lvgl")]
-#[command(version = codegen::built_info::GIT_VERSION.unwrap_or(codegen::built_info::PKG_VERSION))]
+#[command(version = codegen::built_info::PKG_VERSION)]
 #[command(about = "Convert PNG images to LVGL C arrays", long_about = None)]
 #[allow(clippy::struct_excessive_bools)]
 struct Args {

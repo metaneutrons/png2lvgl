@@ -1,26 +1,55 @@
 name: Release
 
+# Release-please creates the GitHub release as a draft, which means GitHub does
+# not create the git tag until this workflow publishes it. The release is
+# therefore staged as a non-latest prerelease, qualified against Homebrew and
+# the AUR, published to every package channel and only then promoted to latest.
+#
+# Recovering from a failed run:
+#
+#   * Failure before `stage` finishes. The draft release exists, the tag does
+#     not. Delete the draft release and re-run, otherwise release-please still
+#     sees an unreleased version and creates a second draft for the same tag.
+#
+#   * Failure after `stage` finishes. The tag and the prerelease are public and
+#     immutable, but no package channel has been touched and the release is not
+#     latest. Fix the cause and re-run the failed jobs; nothing needs deleting.
+#     Only `promote` marks the release as latest.
+#
+# The AUR lane qualifies after staging on purpose: the PKGBUILD checksum is
+# measured from the source tarball GitHub actually serves for the tag, so
+# `makepkg` verifies the same bytes an AUR user downloads.
+
 on:
   push:
     branches: [main]
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+  RUST_BACKTRACE: '1'
+  CARGO_DEB_VERSION: 3.7.0
+  TAP_REPOSITORY: metaneutrons/homebrew-tap
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    name: Prepare draft release
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
       version: ${{ steps.release.outputs.version }}
     steps:
-      - uses: googleapis/release-please-action@v5
+      - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
         id: release
         with:
           config-file: release-please-config.json
@@ -28,204 +57,562 @@ jobs:
 
   build:
     name: Build ${{ matrix.target }}
-    needs: [release-please]
-    if: ${{ needs.release-please.outputs.release_created }}
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-musl
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-musl
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: windows-latest
-            target: aarch64-pc-windows-msvc
-          - os: macos-15-intel
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-24.04
+            deb_arch: amd64
+            runnable: true
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-24.04
+            deb_arch: ''
+            runnable: true
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-24.04-arm
+            deb_arch: arm64
+            runnable: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            deb_arch: ''
+            runnable: true
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            deb_arch: ''
+            runnable: true
+          - target: aarch64-pc-windows-msvc
+            os: windows-latest
+            deb_arch: ''
+            runnable: false
+          - target: x86_64-apple-darwin
+            os: macos-15-intel
+            deb_arch: ''
+            runnable: true
+          - target: aarch64-apple-darwin
+            os: macos-15
+            deb_arch: ''
+            runnable: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@stable
+      # `built` records `git describe` output in built_info::GIT_VERSION. The
+      # release tag does not exist yet because the release is still a draft, so
+      # without this step that value is a bare commit hash.
+      - name: Materialise the release tag for the version string
+        shell: bash
+        env:
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            git -c user.name='github-actions[bot]' \
+                -c user.email='github-actions[bot]@users.noreply.github.com' \
+                tag -a "$TAG" -m "$TAG"
+          fi
+          git describe --tags
+
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
         with:
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu' || matrix.target == 'aarch64-unknown-linux-musl'
+      - name: Install musl toolchain
+        if: contains(matrix.target, '-musl')
         run: |
+          set -euo pipefail
           sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          case "${{ matrix.target }}" in
-            *musl*) sudo apt-get install -y musl-tools ;;
-          esac
-          mkdir -p .cargo
-          cat >> .cargo/config.toml << 'EOF'
-          [target.aarch64-unknown-linux-gnu]
-          linker = "aarch64-linux-gnu-gcc"
-
-          [target.aarch64-unknown-linux-musl]
-          linker = "aarch64-linux-gnu-gcc"
-          EOF
-
-      - name: Install musl tools
-        if: matrix.target == 'x86_64-unknown-linux-musl'
-        run: sudo apt-get install -y musl-tools
+          sudo apt-get install -y --no-install-recommends musl-tools
 
       - name: Build
-        run: cargo build --release --target ${{ matrix.target }}
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target "$TARGET"
+
+      - name: Verify the binary reports its release version
+        if: matrix.runnable
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          binary="target/${TARGET}/release/png2lvgl"
+          if [[ "$TARGET" == *windows* ]]; then
+            binary="${binary}.exe"
+          fi
+          measured=$("$binary" --version)
+          printf 'measured version output: %s\n' "$measured"
+          if [[ "$measured" != *"$VERSION"* ]]; then
+            echo "::error::binary reports '${measured}' which does not contain ${VERSION}"
+            exit 1
+          fi
 
       - name: Build Debian package
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.deb_arch != ''
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.release-please.outputs.version }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
         run: |
-          cargo install cargo-deb
-          cargo deb --target ${{ matrix.target }} --no-build
-          cp target/${{ matrix.target }}/debian/*.deb .
+          set -euo pipefail
+          cargo install cargo-deb --version "$CARGO_DEB_VERSION" --locked
+          mkdir -p dist
+          deb="dist/png2lvgl_${VERSION}-1_${DEB_ARCH}.deb"
+          cargo deb --target "$TARGET" --no-build --output "$deb"
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" | tee "$RUNNER_TEMP/deb-contents.txt"
+          for path in ./usr/bin/png2lvgl ./usr/share/man/man1/png2lvgl.1; do
+            if ! grep -Fq " $path" "$RUNNER_TEMP/deb-contents.txt"; then
+              echo "::error::Debian package is missing $path"
+              exit 1
+            fi
+          done
 
       - name: Create archive
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.release-please.outputs.version }}
         run: |
-          VERSION=${{ needs.release-please.outputs.version }}
-          BIN_NAME=png2lvgl
-
-          case "${{ matrix.target }}" in
+          set -euo pipefail
+          mkdir -p dist stage
+          case "$TARGET" in
             *windows*)
-              ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.zip"
-              cp target/${{ matrix.target }}/release/${BIN_NAME}.exe .
-              7z a "$ARCHIVE" "${BIN_NAME}.exe" README.md LICENSE
+              archive="png2lvgl-${VERSION}-${TARGET}.zip"
+              cp "target/${TARGET}/release/png2lvgl.exe" stage/
+              cp README.md LICENSE stage/
+              (cd stage && 7z a "../dist/${archive}" png2lvgl.exe README.md LICENSE)
               ;;
             *)
-              ARCHIVE="${BIN_NAME}-${VERSION}-${{ matrix.target }}.tar.gz"
-              cp target/${{ matrix.target }}/release/${BIN_NAME} .
-              chmod +x "${BIN_NAME}"
-              mkdir -p share/man/man1
-              find target/${{ matrix.target }}/release/build/png2lvgl-*/out/png2lvgl.1 -exec cp {} share/man/man1/ \;
-              tar czf "$ARCHIVE" "${BIN_NAME}" README.md LICENSE share/
+              archive="png2lvgl-${VERSION}-${TARGET}.tar.gz"
+              cp "target/${TARGET}/release/png2lvgl" stage/
+              chmod +x stage/png2lvgl
+              cp README.md LICENSE stage/
+              # clap_mangen writes the manpage into the build script output
+              # directory. Resolve it explicitly; a `find -exec cp` exits 0 when
+              # it matches nothing and would ship an archive without a manpage.
+              manpage=$(find "target/${TARGET}/release/build" -type f -name png2lvgl.1 -print -quit)
+              if [[ -z "$manpage" ]]; then
+                echo "::error::generated manpage png2lvgl.1 not found for ${TARGET}"
+                exit 1
+              fi
+              install -D -m 644 "$manpage" stage/share/man/man1/png2lvgl.1
+              (cd stage && tar czf "../dist/${archive}" png2lvgl README.md LICENSE share)
               ;;
           esac
+          ls -l dist
 
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
-
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ${{ matrix.target }}
-          path: |
-            ${{ env.ARCHIVE }}
-            *.deb
-          if-no-files-found: ignore
+          name: build-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
 
-  upload-assets:
-    name: Upload release assets
+  candidate:
+    name: Assemble and attest release candidate
     needs: [release-please, build]
-    if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: ubuntu-latest
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/download-artifact@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
-          path: artifacts
+          pattern: build-*
+          path: candidate
+          merge-multiple: true
 
-      - name: Upload assets to GitHub release
+      - name: Enforce the complete release inventory
+        shell: bash
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.release-please.outputs.version }}
         run: |
-          TAG=${{ needs.release-please.outputs.tag_name }}
-          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" -o -name "*.deb" \) \
-            -exec gh release upload "$TAG" {} \;
+          set -euo pipefail
+          expected=(
+            "png2lvgl-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            "png2lvgl-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+            "png2lvgl-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+            "png2lvgl-${VERSION}-aarch64-unknown-linux-musl.tar.gz"
+            "png2lvgl-${VERSION}-x86_64-apple-darwin.tar.gz"
+            "png2lvgl-${VERSION}-aarch64-apple-darwin.tar.gz"
+            "png2lvgl-${VERSION}-x86_64-pc-windows-msvc.zip"
+            "png2lvgl-${VERSION}-aarch64-pc-windows-msvc.zip"
+            "png2lvgl_${VERSION}-1_amd64.deb"
+            "png2lvgl_${VERSION}-1_arm64.deb"
+          )
+          for name in "${expected[@]}"; do
+            if [[ ! -f "candidate/${name}" ]]; then
+              echo "::error::release payload is missing: ${name}"
+              find candidate -maxdepth 1 -type f -print | sort
+              exit 1
+            fi
+          done
+          measured=$(find candidate -maxdepth 1 -type f | wc -l | tr -d ' ')
+          if [[ "$measured" != "${#expected[@]}" ]]; then
+            echo "::error::candidate holds ${measured} files; expected ${#expected[@]}"
+            find candidate -maxdepth 1 -type f -print | sort
+            exit 1
+          fi
+          for archive in candidate/*.tar.gz; do
+            contents=$(tar tzf "$archive")
+            for member in png2lvgl README.md LICENSE share/man/man1/png2lvgl.1; do
+              if ! printf '%s\n' "$contents" | grep -Fxq "$member"; then
+                echo "::error::$(basename "$archive") is missing ${member}"
+                exit 1
+              fi
+            done
+          done
 
-  publish-crates:
-    name: Publish to crates.io
-    needs: [release-please, build]
-    if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - name: Write the checksum inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd candidate && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | \
+            xargs sha256sum) > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" candidate/SHA256SUMS
+          cat candidate/SHA256SUMS
 
-  update-homebrew:
-    name: Update Homebrew tap
-    needs: [release-please, upload-assets]
-    if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v6
+      - name: Generate the Homebrew formula from measured archives
+        shell: bash
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          scripts/release/generate-homebrew-formula.sh \
+            --version "$VERSION" \
+            --base-url "https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}" \
+            --candidate-dir candidate \
+            --output candidate/png2lvgl.rb
+          ruby -c candidate/png2lvgl.rb
+          if [[ $(grep -Fc "/releases/download/${TAG}/" candidate/png2lvgl.rb) != 2 ]]; then
+            echo "::error::formula does not reference exactly two staged release URLs"
+            exit 1
+          fi
+
+      - name: Attest build provenance for every release payload
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
         with:
-          path: artifacts
+          subject-path: |
+            candidate/*.tar.gz
+            candidate/*.zip
+            candidate/*.deb
+            candidate/SHA256SUMS
 
-      - name: Calculate checksums and update tap
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-candidate
+          path: candidate/*
+          if-no-files-found: error
+          retention-days: 14
+
+  homebrew-qualify:
+    name: Homebrew qualification (${{ matrix.os }})
+    needs: [release-please, candidate]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate
+          path: candidate
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@3cdb78d0f62ad29dd32de765782654f4eedea607
+        with:
+          core: false
+          cask: false
+      - name: Audit, install and test the exact formula
+        shell: bash
         env:
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_ANALYTICS: '1'
         run: |
-          VERSION=${{ needs.release-please.outputs.version }}
+          set -euo pipefail
+          port=38080
+          tap=png2lvgl/qualification
+          python3 -m http.server "$port" --bind 127.0.0.1 \
+            --directory candidate >"$RUNNER_TEMP/http.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            brew uninstall png2lvgl >/dev/null 2>&1 || true
+            brew untap "$tap" >/dev/null 2>&1 || true
+            kill "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..20}; do
+            if curl --fail --silent "http://127.0.0.1:${port}/png2lvgl.rb" >/dev/null; then
+              break
+            fi
+            if [[ "$attempt" == 20 ]]; then
+              echo "::error::local candidate server did not become ready"
+              exit 1
+            fi
+            sleep 1
+          done
+          brew tap-new --no-git "$tap"
+          formula="$(brew --repository "$tap")/Formula/png2lvgl.rb"
+          # Serve the measured archives locally. Only the directory part of the
+          # URL changes, so Homebrew still scans the version from the filename.
+          sed -E "s#https://github.com/${GITHUB_REPOSITORY}/releases/download/[^/\"]+#http://127.0.0.1:${port}#g" \
+            candidate/png2lvgl.rb > "$formula"
+          if [[ $(grep -c "url \"http://127.0.0.1:${port}/" "$formula") != 2 ]]; then
+            echo "::error::formula must retain exactly two host URLs"
+            exit 1
+          fi
+          ruby -c "$formula"
+          brew audit --strict "$tap/png2lvgl"
+          brew install "$tap/png2lvgl"
+          brew test "$tap/png2lvgl"
+          test -f "$(brew --prefix png2lvgl)/share/man/man1/png2lvgl.1"
+          brew uninstall png2lvgl
+          brew untap "$tap"
 
-          X64_FILE=$(find artifacts -name "png2lvgl-${VERSION}-x86_64-apple-darwin.tar.gz")
-          ARM64_FILE=$(find artifacts -name "png2lvgl-${VERSION}-aarch64-apple-darwin.tar.gz")
+  stage:
+    name: Stage verified prerelease
+    needs: [release-please, candidate, homebrew-qualify]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate
+          path: candidate
 
-          X64_SHA=$(sha256sum "$X64_FILE" | cut -d' ' -f1)
-          ARM64_SHA=$(sha256sum "$ARM64_FILE" | cut -d' ' -f1)
+      - name: Require an untouched draft release
+        run: |
+          set -euo pipefail
+          state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets)
+          if [[ $(jq -r '.isDraft' <<<"$state") != true ]]; then
+            echo "::error::release ${TAG} is not a draft; refusing to mutate a published release"
+            exit 1
+          fi
+          if [[ $(jq -r '.assets | length' <<<"$state") != 0 ]]; then
+            echo "::error::draft release ${TAG} already carries assets"
+            exit 1
+          fi
 
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/metaneutrons/homebrew-tap.git"
-          cd homebrew-tap
-          mkdir -p Formula
+      - name: Upload the qualified payloads
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+            candidate/*.tar.gz candidate/*.zip candidate/*.deb candidate/SHA256SUMS
 
-          cat > Formula/png2lvgl.rb << EOF
-          class Png2lvgl < Formula
-            desc "Convert PNG images to LVGL C arrays"
-            homepage "https://github.com/metaneutrons/png2lvgl"
-            version "${VERSION}"
-            license "GPL-3.0"
+      - name: Read the draft back and verify every checksum
+        run: |
+          set -euo pipefail
+          mkdir isolated
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir isolated
+          measured=$(find isolated -maxdepth 1 -type f | wc -l | tr -d ' ')
+          if [[ "$measured" != 11 ]]; then
+            echo "::error::draft carries ${measured} assets; expected 11"
+            find isolated -maxdepth 1 -type f -print | sort
+            exit 1
+          fi
+          (cd isolated && sha256sum -c SHA256SUMS)
 
-            on_macos do
-              if Hardware::CPU.intel?
-                url "https://github.com/metaneutrons/png2lvgl/releases/download/v${VERSION}/png2lvgl-${VERSION}-x86_64-apple-darwin.tar.gz"
-                sha256 "${X64_SHA}"
-              else
-                url "https://github.com/metaneutrons/png2lvgl/releases/download/v${VERSION}/png2lvgl-${VERSION}-aarch64-apple-darwin.tar.gz"
-                sha256 "${ARM64_SHA}"
-              end
-            end
+      - name: Publish the unchanged draft as a non-latest prerelease
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease --latest=false
+          # Publishing the draft is what creates the tag. Everything downstream
+          # needs the tag to be resolvable.
+          for attempt in {1..20}; do
+            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
+              exit 0
+            fi
+            if [[ "$attempt" == 20 ]]; then
+              echo "::error::tag ${TAG} did not appear after publishing the release"
+              exit 1
+            fi
+            sleep 5
+          done
 
-            def install
-              bin.install "png2lvgl"
-              man1.install "share/man/man1/png2lvgl.1"
-            end
+  aur-qualify:
+    name: AUR qualification
+    needs: [release-please, stage]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel@sha256:a26046b7363dad8e2614858f4313949ae9b05c9c5f31de343a54864b9e20806f
+    timeout-minutes: 45
+    steps:
+      - name: Install Arch build prerequisites
+        run: |
+          set -euo pipefail
+          pacman -Syu --noconfirm --needed git rust
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-            test do
-              assert_match version.to_s, shell_output("#{bin}/png2lvgl --version")
-            end
-          end
-          EOF
+      - name: Generate the PKGBUILD from the published source tarball
+        shell: bash
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          mkdir -p out
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error --location "$url" \
+              --output "out/source-${VERSION}.tar.gz"; then
+              break
+            fi
+            if [[ "$attempt" == 20 ]]; then
+              echo "::error::GitHub did not serve the source tarball for ${TAG}"
+              exit 1
+            fi
+            sleep 10
+          done
+          scripts/release/generate-pkgbuild.sh \
+            --version "$VERSION" \
+            --url "$url" \
+            --source-archive "out/source-${VERSION}.tar.gz" \
+            --output out/PKGBUILD
+          cat out/PKGBUILD
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Build, verify and install the measured package
+        shell: bash
+        env:
+          VERSION: ${{ needs.release-please.outputs.version }}
+        run: |
+          set -euo pipefail
+          useradd --create-home builder
+          work=/home/builder/package
+          install -d -o builder -g builder "$work"
+          install -o builder -g builder -m 0644 out/PKGBUILD "$work/PKGBUILD"
+          # makepkg downloads the real source tarball and enforces the measured
+          # sha256sums, so this exercises exactly what an AUR user gets.
+          su builder -c "cd '$work' && makepkg --cleanbuild --noconfirm"
+          package=$(find "$work" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print -quit)
+          if [[ -z "$package" ]]; then
+            echo "::error::makepkg did not produce a package"
+            exit 1
+          fi
+          bsdtar -tf "$package" | sort
+          pacman -U --noconfirm "$package"
+          measured=$(png2lvgl --version)
+          printf 'installed version output: %s\n' "$measured"
+          if [[ "$measured" != *"$VERSION"* ]]; then
+            echo "::error::installed package reports '${measured}' without ${VERSION}"
+            exit 1
+          fi
+          test -f /usr/share/man/man1/png2lvgl.1
+          png2lvgl --help >/dev/null
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: aur-pkgbuild
+          path: out/PKGBUILD
+          if-no-files-found: error
+          retention-days: 14
+
+  publish-homebrew:
+    name: Publish Homebrew formula
+    needs: [release-please, stage, aur-qualify]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    env:
+      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      VERSION: ${{ needs.release-please.outputs.version }}
+      TAG: ${{ needs.release-please.outputs.tag_name }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate
+          path: candidate
+
+      - name: Open a formula update pull request
+        id: update
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_formula="${GITHUB_WORKSPACE}/candidate/png2lvgl.rb"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPOSITORY}.git" \
+            "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          if [[ -f Formula/png2lvgl.rb ]] && cmp -s "$source_formula" Formula/png2lvgl.rb; then
+            echo 'pr=' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          branch="release/png2lvgl-${VERSION}-${GITHUB_RUN_ID}"
+          git switch -c "$branch"
+          install -m 0644 "$source_formula" Formula/png2lvgl.rb
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
           git add Formula/png2lvgl.rb
-          git commit -m "Update png2lvgl to ${VERSION}"
-          git push
+          # The tap fails closed if README.md does not match its formulas.
+          if [[ -x scripts/generate-readme.sh ]]; then
+            scripts/generate-readme.sh
+            git add README.md
+          fi
+          git commit -m "png2lvgl ${VERSION}"
+          git push -u origin "$branch"
+          pr=$(gh pr create --repo "$TAP_REPOSITORY" \
+            --base main --head "$branch" \
+            --title "png2lvgl ${VERSION}" \
+            --body "Automated update from the verified ${TAG} prerelease assets. The stable release stays blocked until every tap qualification lane passes.")
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+
+      - name: Require tap qualification, then merge
+        if: steps.update.outputs.pr != ''
+        env:
+          PR: ${{ steps.update.outputs.pr }}
+        run: |
+          set -euo pipefail
+          gh pr checks "$PR" --repo "$TAP_REPOSITORY" --watch --fail-fast --interval 20
+          gh pr merge "$PR" --repo "$TAP_REPOSITORY" --squash --delete-branch
+
+      - name: Verify the formula now on protected main
+        run: |
+          set -euo pipefail
+          gh api "repos/${TAP_REPOSITORY}/contents/Formula/png2lvgl.rb?ref=main" \
+            --jq .content | base64 --decode > "$RUNNER_TEMP/published-formula.rb"
+          cmp "$RUNNER_TEMP/published-formula.rb" candidate/png2lvgl.rb
 
   publish-aur:
-    name: Publish to AUR
-    needs: [release-please, upload-assets]
-    if: ${{ needs.release-please.outputs.release_created }}
-    runs-on: ubuntu-latest
+    name: Publish AUR package
+    needs: [release-please, aur-qualify, publish-homebrew]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: aur-pkgbuild
+          path: aur
 
-      - name: Update PKGBUILD version
-        run: |
-          VERSION=${{ needs.release-please.outputs.version }}
-          sed -i "s/^pkgver=.*/pkgver=${VERSION}/" aur/PKGBUILD
-          sed -i "s/^pkgrel=.*/pkgrel=1/" aur/PKGBUILD
-
-      - name: Publish to AUR
-        uses: KSXGitHub/github-actions-deploy-aur@v4.1.3
+      - name: Publish the qualified PKGBUILD
+        uses: KSXGitHub/github-actions-deploy-aur@da03e160361ce01bf087e790b6ffd196d7dccff7 # v4.1.3
         with:
           pkgname: png2lvgl
           pkgbuild: ./aur/PKGBUILD
@@ -234,3 +621,57 @@ jobs:
           ssh_private_key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           commit_message: "Update to ${{ needs.release-please.outputs.version }}"
           ssh_keyscan_types: rsa,ecdsa,ed25519
+
+      - name: Verify the public AUR metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error --get \
+              --data-urlencode 'v=5' --data-urlencode 'type=info' \
+              --data-urlencode 'arg[]=png2lvgl' https://aur.archlinux.org/rpc | \
+              jq -e --arg version "${VERSION}-1" \
+                '.resultcount == 1 and .results[0].Version == $version' >/dev/null; then
+              exit 0
+            fi
+            if [[ "$attempt" == 20 ]]; then
+              echo "::error::AUR metadata did not converge to ${VERSION}-1"
+              exit 1
+            fi
+            sleep 15
+          done
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [release-please, publish-homebrew, publish-aur]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@4360b52568e2003a75bf9bc1d59f33a8e3fc893c # stable
+      # Publishing to crates.io cannot be undone, only yanked, so it runs last:
+      # every reversible channel has already been published and verified.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --locked
+
+  promote:
+    name: Promote to latest
+    needs: [release-please, publish-homebrew, publish-aur, publish-crates]
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Promote the already verified prerelease without changing assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.release-please.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
