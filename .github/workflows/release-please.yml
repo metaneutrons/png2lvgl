@@ -207,7 +207,11 @@ jobs:
                 echo "::error::generated manpage png2lvgl.1 not found for ${TARGET}"
                 exit 1
               fi
-              install -D -m 644 "$manpage" stage/share/man/man1/png2lvgl.1
+              # Not `install -D`: on macOS that flag takes an argument and means
+              # something unrelated, so the step failed with EX_USAGE there.
+              mkdir -p stage/share/man/man1
+              cp "$manpage" stage/share/man/man1/png2lvgl.1
+              chmod 644 stage/share/man/man1/png2lvgl.1
               (cd stage && tar czf "../dist/${archive}" png2lvgl README.md LICENSE share)
               ;;
           esac
