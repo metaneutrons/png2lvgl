@@ -102,10 +102,9 @@ jobs:
         with:
           fetch-depth: 0
 
-      # build.rs derives the --version string from `git describe`. The release
-      # tag does not exist yet because the release is still a draft, so without
-      # this step the shipped binaries report a bare commit hash instead of
-      # their version, which is what v0.3.5 and everything before it did.
+      # `built` records `git describe` output in built_info::GIT_VERSION. The
+      # release tag does not exist yet because the release is still a draft, so
+      # without this step that value is a bare commit hash.
       - name: Materialise the release tag for the version string
         shell: bash
         env:

@@ -107,7 +107,7 @@ pub fn generate<W: Write>(
 // ---------------------------------------------------------------------------
 
 fn write_header<W: Write>(writer: &mut W, params: &GenerateParams<'_>) -> Result<()> {
-    let version = built_info::GIT_VERSION.unwrap_or(built_info::PKG_VERSION);
+    let version = built_info::PKG_VERSION;
     let lvgl_ver = match params.lvgl_version {
         LvglVersion::V8 => "LVGL 8.x",
         LvglVersion::V9 => "LVGL 9.x",
