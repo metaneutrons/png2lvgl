@@ -1,0 +1,5 @@
+# thiserror 2.0.19 moved its proc-macro to syn 3 while clap_derive and
+# tracing-attributes still build on syn 2. The duplication is transitive,
+# outside this crate's control and disappears once those two follow. Without
+# this allowance clippy::cargo denies the build through multiple_crate_versions.
+allowed-duplicate-crates = ["syn"]
