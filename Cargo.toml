@@ -11,6 +11,18 @@ homepage = "https://github.com/metaneutrons/png2lvgl"
 readme = "README.md"
 keywords = ["lvgl", "embedded", "graphics", "image", "converter"]
 categories = ["command-line-utilities", "embedded", "graphics"]
+# node_modules is tracked in the repository for the husky and commitlint hooks,
+# so cargo would otherwise package it. Up to and including 0.3.5 that made the
+# published crate 6.17 MB of which 6387 of 6421 files were node_modules.
+exclude = [
+    "node_modules/",
+    ".husky/",
+    ".github/",
+    "scripts/",
+    "package.json",
+    "package-lock.json",
+    "commitlint.config.js",
+]
 
 [package.metadata.deb]
 maintainer = "metaneutrons"
