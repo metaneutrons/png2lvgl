@@ -57,10 +57,22 @@ done
 archive_bytes=$(wc -c < "$SOURCE_ARCHIVE" | tr -d ' ')
 (( archive_bytes >= 4096 )) ||
   fail PKB1006 "source archive is implausibly small: ${archive_bytes} bytes"
-tar tzf "$SOURCE_ARCHIVE" >/dev/null 2>&1 ||
+# Materialise the listing instead of piping it into a reader that exits early.
+# Under `set -o pipefail` a `tar | grep -q` pipeline reports failure whenever
+# grep finds its match before tar has finished writing: tar then dies of
+# SIGPIPE with status 141 and pipefail propagates that. The match position
+# decides it, so the bug is a race that passes locally and fails in CI.
+listing="$(mktemp)"
+# shellcheck disable=SC2064
+trap "rm -f '$listing'" EXIT
+tar tzf "$SOURCE_ARCHIVE" > "$listing" 2>/dev/null ||
   fail PKB1007 "source archive is not a readable gzip tarball: $SOURCE_ARCHIVE"
-tar tzf "$SOURCE_ARCHIVE" | grep -Fxq "png2lvgl-${VERSION}/Cargo.toml" ||
+if ! grep -Fxq "png2lvgl-${VERSION}/Cargo.toml" "$listing"; then
+  printf '%s[PKB1008]: archive holds %s entries, first ten:\n' \
+    "$PROGRAM" "$(wc -l < "$listing" | tr -d ' ')" >&2
+  head -10 "$listing" >&2
   fail PKB1008 "source archive does not contain png2lvgl-${VERSION}/Cargo.toml"
+fi
 
 SOURCE_SHA="$(sha256_of "$SOURCE_ARCHIVE")"
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{64}$ ]] ||

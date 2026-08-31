@@ -286,10 +286,14 @@ jobs:
             find candidate -maxdepth 1 -type f -print | sort
             exit 1
           fi
+          # Grep a materialised listing rather than a pipeline. Under pipefail a
+          # writer that is still going when `grep -q` exits on its match dies of
+          # SIGPIPE, and the pipeline then reports a failure that never happened.
+          listing="$RUNNER_TEMP/archive-listing.txt"
           for archive in candidate/*.tar.gz; do
-            contents=$(tar tzf "$archive")
+            tar tzf "$archive" > "$listing"
             for member in png2lvgl README.md LICENSE share/man/man1/png2lvgl.1; do
-              if ! printf '%s\n' "$contents" | grep -Fxq "$member"; then
+              if ! grep -Fxq "$member" "$listing"; then
                 echo "::error::$(basename "$archive") is missing ${member}"
                 exit 1
               fi
