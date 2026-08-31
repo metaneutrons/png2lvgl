@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.8](https://github.com/metaneutrons/png2lvgl/compare/v0.3.7...v0.3.8) (2026-08-31)
+
+
+### Bug Fixes
+
+* check the right package and the compressed manpage in the AUR lane ([9e72a7a](https://github.com/metaneutrons/png2lvgl/commit/9e72a7a9caa4496f249d79478fccced0b0a34c94))
+* check the right package and the compressed manpage in the AUR lane ([be204c0](https://github.com/metaneutrons/png2lvgl/commit/be204c088c46a2f7c04f786260dd5806dcd44273))
+
 ## [0.3.7](https://github.com/metaneutrons/png2lvgl/compare/v0.3.6...v0.3.7) (2026-08-31)
 
 
