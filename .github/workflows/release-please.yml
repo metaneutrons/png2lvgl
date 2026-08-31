@@ -519,11 +519,19 @@ jobs:
           # makepkg downloads the real source tarball and enforces the measured
           # sha256sums, so this exercises exactly what an AUR user gets.
           su builder -c "cd '$work' && makepkg --cleanbuild --noconfirm"
-          package=$(find "$work" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print -quit)
-          if [[ -z "$package" ]]; then
-            echo "::error::makepkg did not produce a package"
+          # makepkg also emits png2lvgl-debug-<version>. Select the real package
+          # by name and insist on exactly one match: `find -print -quit` returns
+          # whichever the directory order yields first, which has already picked
+          # the debug package on one machine.
+          mapfile -t packages < <(find "$work" -maxdepth 1 -type f \
+            -name "png2lvgl-${VERSION}-*.pkg.tar.zst" ! -name '*debug*' | sort)
+          if [[ ${#packages[@]} != 1 ]]; then
+            echo "::error::expected exactly one png2lvgl package, found ${#packages[@]}"
+            find "$work" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print | sort
             exit 1
           fi
+          package="${packages[0]}"
+          echo "selected package: $(basename "$package")"
           bsdtar -tf "$package" | sort
           pacman -U --noconfirm "$package"
           measured=$(png2lvgl --version)
@@ -532,7 +540,14 @@ jobs:
             echo "::error::installed package reports '${measured}' without ${VERSION}"
             exit 1
           fi
-          test -f /usr/share/man/man1/png2lvgl.1
+          # makepkg compresses manpages, so the installed file is .1.gz. Accept
+          # either so the check does not depend on that packaging detail.
+          if [[ ! -f /usr/share/man/man1/png2lvgl.1 && \
+                ! -f /usr/share/man/man1/png2lvgl.1.gz ]]; then
+            echo "::error::installed package ships no manpage"
+            ls -l /usr/share/man/man1/ || true
+            exit 1
+          fi
           png2lvgl --help >/dev/null
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
