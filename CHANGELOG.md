@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7](https://github.com/metaneutrons/png2lvgl/compare/v0.3.6...v0.3.7) (2026-08-31)
+
+
+### Bug Fixes
+
+* stop pipefail from turning a found match into a failure ([0f88d93](https://github.com/metaneutrons/png2lvgl/commit/0f88d93bd88e2735a65f1216d055479009f0bda1))
+* stop pipefail from turning a found match into a failure ([2e4a176](https://github.com/metaneutrons/png2lvgl/commit/2e4a176de535de6e6ba603841d621bf1732508d6))
+
 ## [0.3.6](https://github.com/metaneutrons/png2lvgl/compare/v0.3.5...v0.3.6) (2026-08-31)
 
 
