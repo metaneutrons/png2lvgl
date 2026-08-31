@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6](https://github.com/metaneutrons/png2lvgl/compare/v0.3.5...v0.3.6) (2026-08-31)
+
+
+### Bug Fixes
+
+* build the release archive on macOS again ([48d822e](https://github.com/metaneutrons/png2lvgl/commit/48d822e41918719b84774e1de110a8b51941035f))
+* build the release archive on macOS again ([49b7196](https://github.com/metaneutrons/png2lvgl/commit/49b7196ec40f8f0df93f53cf40c75e334792c4fc))
+* keep release-please anchored by not using draft releases ([2fae879](https://github.com/metaneutrons/png2lvgl/commit/2fae879d45ea9185862f98729cb0ad2edfbf7de5))
+* keep release-please anchored by not using draft releases ([66cbace](https://github.com/metaneutrons/png2lvgl/commit/66cbace512efbb0dc211a78cfd726def00040552))
+* report the package version instead of a git describe string ([4ea5212](https://github.com/metaneutrons/png2lvgl/commit/4ea52125d990469125337b804dae0742c3cad946))
+* stop packaging node_modules into the published crate ([b8d38a5](https://github.com/metaneutrons/png2lvgl/commit/b8d38a5285f9988f3f644bce250ca087e2305bf1))
+
+
+### Reverts
+
+* "chore(main): release 0.3.6" ([c524291](https://github.com/metaneutrons/png2lvgl/commit/c52429167b5a10d6507c3a47f24a9af3675888ee))
+
 ## [0.3.5](https://github.com/metaneutrons/png2lvgl/compare/v0.3.4...v0.3.5) (2026-04-27)
 
 
