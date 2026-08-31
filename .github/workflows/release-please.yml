@@ -1,20 +1,21 @@
 name: Release
 
-# Release-please creates the GitHub release as a draft, which means GitHub does
-# not create the git tag until this workflow publishes it. The release is
-# therefore staged as a non-latest prerelease, qualified against Homebrew and
-# the AUR, published to every package channel and only then promoted to latest.
+# Release-please creates the GitHub release, which creates the tag. The release
+# is demoted to a non-latest prerelease in the same job, then qualified against
+# Homebrew and the AUR, published to every package channel, and only promoted to
+# latest once all of that succeeded.
 #
-# Recovering from a failed run:
+# Do not set `"draft": true` in release-please-config.json to close the short
+# window in which the release exists without assets. GitHub creates the tag only
+# when a draft is published, and release-please determines what has already been
+# released from tags. A draft release therefore leaves release-please without an
+# anchor: after cutting v0.3.6 as a draft it treated the whole history as
+# unreleased and opened a follow-up release PR with 44 changelog entries.
 #
-#   * Failure before `stage` finishes. The draft release exists, the tag does
-#     not. Delete the draft release and re-run, otherwise release-please still
-#     sees an unreleased version and creates a second draft for the same tag.
-#
-#   * Failure after `stage` finishes. The tag and the prerelease are public and
-#     immutable, but no package channel has been touched and the release is not
-#     latest. Fix the cause and re-run the failed jobs; nothing needs deleting.
-#     Only `promote` marks the release as latest.
+# Recovering from a failed run: the tag and the prerelease are public and
+# immutable, but no package channel has been touched and the release is not
+# latest. Fix the cause and re-run the failed jobs; nothing needs deleting, and
+# only `promote` marks the release as latest.
 #
 # The AUR lane qualifies after staging on purpose: the PKGBUILD checksum is
 # measured from the source tarball GitHub actually serves for the tag, so
@@ -39,7 +40,7 @@ env:
 
 jobs:
   release-please:
-    name: Prepare draft release
+    name: Prepare release
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -54,6 +55,18 @@ jobs:
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # release-please publishes the release as latest. Demote it right away so
+      # an unqualified release is never presented as the current version. The
+      # promote job restores latest once every channel is published.
+      - name: Demote the fresh release until it is qualified
+        if: steps.release.outputs.release_created == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag_name }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease --latest=false
 
   build:
     name: Build ${{ matrix.target }}
@@ -103,8 +116,8 @@ jobs:
           fetch-depth: 0
 
       # `built` records `git describe` output in built_info::GIT_VERSION. The
-      # release tag does not exist yet because the release is still a draft, so
-      # without this step that value is a bare commit hash.
+      # tag normally exists by now, but the fetch can race the release, so this
+      # creates it locally when missing. Idempotent by design.
       - name: Materialise the release tag for the version string
         shell: bash
         env:
@@ -409,16 +422,16 @@ jobs:
           name: release-candidate
           path: candidate
 
-      - name: Require an untouched draft release
+      - name: Require an unqualified release without assets
         run: |
           set -euo pipefail
-          state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets)
-          if [[ $(jq -r '.isDraft' <<<"$state") != true ]]; then
-            echo "::error::release ${TAG} is not a draft; refusing to mutate a published release"
+          state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isPrerelease,assets)
+          if [[ $(jq -r '.isPrerelease' <<<"$state") != true ]]; then
+            echo "::error::release ${TAG} is not marked as a prerelease; refusing to mutate a promoted release"
             exit 1
           fi
           if [[ $(jq -r '.assets | length' <<<"$state") != 0 ]]; then
-            echo "::error::draft release ${TAG} already carries assets"
+            echo "::error::release ${TAG} already carries assets"
             exit 1
           fi
 
@@ -428,36 +441,25 @@ jobs:
           gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
             candidate/*.tar.gz candidate/*.zip candidate/*.deb candidate/SHA256SUMS
 
-      - name: Read the draft back and verify every checksum
+      - name: Read the release back and verify every checksum
         run: |
           set -euo pipefail
           mkdir isolated
           gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir isolated
           measured=$(find isolated -maxdepth 1 -type f | wc -l | tr -d ' ')
           if [[ "$measured" != 11 ]]; then
-            echo "::error::draft carries ${measured} assets; expected 11"
+            echo "::error::release carries ${measured} assets; expected 11"
             find isolated -maxdepth 1 -type f -print | sort
             exit 1
           fi
           (cd isolated && sha256sum -c SHA256SUMS)
 
-      - name: Publish the unchanged draft as a non-latest prerelease
+      - name: Require the tag to be resolvable
         run: |
           set -euo pipefail
-          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
-            --draft=false --prerelease --latest=false
-          # Publishing the draft is what creates the tag. Everything downstream
-          # needs the tag to be resolvable.
-          for attempt in {1..20}; do
-            if gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" >/dev/null 2>&1; then
-              exit 0
-            fi
-            if [[ "$attempt" == 20 ]]; then
-              echo "::error::tag ${TAG} did not appear after publishing the release"
-              exit 1
-            fi
-            sleep 5
-          done
+          # The AUR lane downloads the source tarball for this tag, so fail here
+          # rather than half way through the package channels.
+          gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${TAG}" --jq '.object.sha'
 
   aur-qualify:
     name: AUR qualification
