@@ -1,108 +1,170 @@
 name: CI
 
 on:
-  push:
-    branches: [main, develop]
   pull_request:
-    branches: [main, develop]
-  schedule:
-    - cron: '0 0 * * 0'
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_BACKTRACE: 1
+  RUST_BACKTRACE: '1'
 
 jobs:
-  test:
-    name: Test
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-        rust: [stable, beta]
+  quality:
+    name: Format, Clippy, Lizenzen
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-features
-
-  clippy:
-    name: Clippy
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-
-  fmt:
-    name: Format
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      # Kein dtolnay/rust-toolchain: die Version steht in rust-toolchain.toml
+      # und rustup installiert sie daraus. Zwei Quellen wären eine Fehlerquelle.
+      - run: rustup show
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
       - run: cargo fmt --all -- --check
-
-  security:
-    name: Security Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: rustsec/audit-check@v2
+      # Das lefthook-Repo hat kein install.sh. Binary aus dem Release-Asset,
+      # Version gepinnt wie jede andere Abhängigkeit.
+      - name: Hook-Konfiguration prüfen
+        env:
+          LEFTHOOK_VERSION: '2.1.12'
+        run: |
+          set -euo pipefail
+          curl -sSfL \
+            "https://github.com/evilmartians/lefthook/releases/download/v${LEFTHOOK_VERSION}/lefthook_${LEFTHOOK_VERSION}_Linux_x86_64.gz" \
+            | gzip -d > "$RUNNER_TEMP/lefthook"
+          chmod +x "$RUNNER_TEMP/lefthook"
+          "$RUNNER_TEMP/lefthook" validate
+      - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-deny
+      - run: cargo deny check
 
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo install cargo-tarpaulin
-      - run: cargo tarpaulin --out xml
-      - uses: codecov/codecov-action@v7
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          fail_ci_if_error: false
-
-  msrv:
-    name: MSRV (1.88)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-features
-
-  build:
-    name: Build Release
-    runs-on: ${{ matrix.os }}
+  test:
+    name: Tests (${{ matrix.name }})
     strategy:
+      fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
-            target: x86_64-apple-darwin
-          - os: macos-latest
-            target: aarch64-apple-darwin
+          - { name: linux-x86_64,  runner: ubuntu-24.04 }
+          - { name: linux-aarch64, runner: ubuntu-24.04-arm }
+          - { name: macos-x86_64,  runner: macos-15-intel }
+          - { name: macos-aarch64, runner: macos-15 }
+    runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup show
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --target ${{ matrix.target }}
-      - uses: actions/upload-artifact@v7
+          tool: cargo-nextest,cargo-llvm-cov
+      - run: cargo nextest run --workspace --all-features --locked
+      - name: Coverage mit harter Untergrenze
+        if: matrix.name == 'linux-x86_64'
+        run: cargo llvm-cov --workspace --all-features --locked --fail-under-lines 75
+
+  # png2lvgl wird auf crates.io veröffentlicht, deshalb ist rust-version in
+  # Cargo.toml eine Zusage an Konsumenten und braucht einen eigenen Testlauf.
+  msrv:
+    name: MSRV 1.88
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - run: rustup toolchain install 1.88 --profile minimal
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      # rust-toolchain.toml überschreibt die rustup-Auswahl, ein blankes cargo
+      # würde hier also 1.98 prüfen und nichts beweisen. Nur ein ausdrückliches
+      # +toolchain schlägt die Datei.
+      - run: cargo +1.88 check --all-features --locked
+
+  commit-hygiene:
+    name: Commit-Hygiene
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          name: png2lvgl-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/png2lvgl${{ matrix.os == 'windows-latest' && '.exe' || '' }}
+          fetch-depth: 0
+      - name: Titel, Body und alle Commits prüfen
+        # Titel und Body kommen ausschließlich über env in das Skript, nie
+        # per Interpolation in den Skripttext: sonst wäre der PR-Titel ein
+        # Shell-Injection-Vektor.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          status=0
+          cc='^((feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)(\([a-z0-9._/-]+\))?!?: .+|Revert ".+")'
+          # grep arbeitet zeilenweise, deshalb .* statt [^\n]*: in ERE wäre [^\n]
+          # die Klasse "kein Backslash und kein n" und würde Namen mit 'n'
+          # ausschließen. In der RE2-Regel des Rulesets ist [^\n] dagegen richtig.
+          ban='co-authored-by:.*(claude|anthropic)|generated with.*claude code'
+
+          # Bei Squash-Merge wird der PR-Titel zur Betreffzeile auf main und
+          # bestimmt damit die nächste Version.
+          if ! printf '%s' "$PR_TITLE" | grep -Eq "$cc"; then
+            echo "::error::PR-Titel folgt nicht Conventional Commits: $PR_TITLE"
+            status=1
+          fi
+
+          # Mit squash_merge_commit_message=PR_BODY landet der Body im Commit.
+          if printf '%s' "$PR_BODY" | grep -Eiq "$ban"; then
+            echo "::error::Der PR-Body enthält einen KI-Attributions-Trailer."
+            status=1
+          fi
+
+          for sha in $(git rev-list "${BASE_SHA}..${HEAD_SHA}"); do
+            if git log -1 --format=%B "$sha" | grep -Eiq "$ban"; then
+              echo "::error::Commit $sha enthält einen KI-Attributions-Trailer."
+              status=1
+            fi
+            email=$(git log -1 --format='%ae%n%ce' "$sha")
+            if printf '%s' "$email" | grep -Fq 'noreply@anthropic.com'; then
+              echo "::error::Commit $sha hat eine Anthropic-Adresse als Autor oder Committer."
+              status=1
+            fi
+          done
+
+          if [ "$status" -ne 0 ]; then
+            echo "::notice::Dauerhaft abstellen in ~/.claude/settings.json: {\"attribution\":{\"commit\":\"\",\"pr\":\"\"}}"
+            exit 1
+          fi
+
+  secrets:
+    name: Secret-Scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      # Der pre-push-Hook scannt nur die neuen Commits. Der Vollscan über die
+      # History gehört hierher, sonst ist die Begründung in commits.md hohl.
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          # Ohne das Token bricht die Action bei pull_request ab mit
+          # "GITHUB_TOKEN is now required to scan pull requests".
+          # Ein Lizenzschlüssel ist hier nicht nötig, das Konto ist persönlich.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Einziger Required Check im Ruleset. Matrix-Änderungen brechen damit nicht
+  # die Repository-Konfiguration.
+  ci-success:
+    name: CI Success
+    if: always()
+    needs: [quality, test, msrv, secrets, commit-hygiene]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Jeder vorangehende Job muss erfolgreich oder übersprungen sein
+        run: |
+          set -euo pipefail
+          printf '%s\n' '${{ toJSON(needs) }}' |
+            jq -e 'all(.[]; .result == "success" or .result == "skipped")'

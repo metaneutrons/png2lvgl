@@ -11,18 +11,15 @@ homepage = "https://github.com/metaneutrons/png2lvgl"
 readme = "README.md"
 keywords = ["lvgl", "embedded", "graphics", "image", "converter"]
 categories = ["command-line-utilities", "embedded", "graphics"]
-# Keep the JavaScript tooling, the workflows and the release scripts out of the
-# published crate. node_modules is also gitignored now, but it stays listed here
-# so a stray checkout cannot repeat what happened up to 0.3.5, where 6387 of the
-# 6421 packaged files came from node_modules and the crate was 6.17 MB.
+# Keep the workflows, the release scripts and the tooling configuration out of
+# the published crate. The JavaScript entries are gone with husky and
+# commitlint; up to 0.3.5, 6387 of the 6421 packaged files came from
+# node_modules and the crate was 6.17 MB.
 exclude = [
-    "node_modules/",
-    ".husky/",
     ".github/",
     "scripts/",
-    "package.json",
-    "package-lock.json",
-    "commitlint.config.js",
+    "lefthook.yml",
+    "deny.toml",
 ]
 
 [package.metadata.deb]
@@ -58,6 +55,9 @@ image = { version = "=0.25.10", default-features = false, features = ["png"] }
 thiserror = "=2.0.20"
 tracing = "=0.1.44"
 tracing-subscriber = { version = "=0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+tempfile = "=3.27.0"
 
 [build-dependencies]
 built = { version = "=0.8.1", features = ["git2"] }
