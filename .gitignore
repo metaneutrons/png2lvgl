@@ -1,35 +1,37 @@
-# Rust
-/target
+# Muster bewusst UNVERANKERT, damit sie auf jeder Ebene greifen.
+# Ein führender Slash würde bei einem neuen Unterprojekt nicht mehr passen.
+
+target/
 **/*.rs.bk
 *.pdb
 
-# macOS
+# Coverage
+lcov.info
+coverage/
+*.profraw
+
+# Node, falls irgendwo ein Unterprojekt entsteht
+node_modules/
+dist/
+.pnpm-store/
+
+# Umgebung und Zustand
+.env
+.env.*
+!.env.example
+*.log
+
+# Editor und Betriebssystem
 .DS_Store
-.AppleDouble
-.LSOverride
-._*
-
-# Windows
 Thumbs.db
-ehthumbs.db
-Desktop.ini
-$RECYCLE.BIN/
-
-# Linux
-*~
-.directory
-
-# IDEs
-.vscode/
 .idea/
+.vscode/
 *.swp
 *.swo
 *~
 
-# Node (husky and commitlint tooling)
-node_modules/
-
 # Project specific
+# png2lvgl erzeugt C-Dateien und liest PNGs; beides gehoert nicht ins Repo.
 *.c
 *.png
 .amazonq

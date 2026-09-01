@@ -1,0 +1,101 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": [
+    "config:recommended",
+    ":semanticCommits",
+    ":semanticCommitTypeAll(chore)",
+    "helpers:pinGitHubActionDigests"
+  ],
+  "timezone": "Europe/Berlin",
+  "schedule": [
+    "before 6am on monday"
+  ],
+  "prConcurrentLimit": 5,
+  "labels": [
+    "dependencies"
+  ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "schedule": [
+      "before 6am on the first day of the month"
+    ]
+  },
+  "packageRules": [
+    {
+      "description": "typescript ist an die Peer-Grenze von typescript-eslint gebunden (>=4.8.4 <6.1.0, Stand 31.08.2026). Erst anheben, wenn der Range geweitet ist.",
+      "matchPackageNames": [
+        "typescript"
+      ],
+      "allowedVersions": "<6.1.0",
+      "dependencyDashboardApproval": true,
+      "automerge": false
+    },
+    {
+      "description": "Rust-Toolchain einzeln, weil sie den gesamten Build betrifft",
+      "matchManagers": [
+        "rust-toolchain"
+      ],
+      "groupName": "rust toolchain",
+      "automerge": false
+    },
+    {
+      "description": "Produktive Abhaengigkeiten gebuendelt, Minor und Patch. 'required' ist kein depType irgendeines Managers und war falsch.",
+      "matchDepTypes": [
+        "dependencies",
+        "workspace.dependencies"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "prod dependencies"
+    },
+    {
+      "description": "Entwicklungsabh\u00e4ngigkeiten geb\u00fcndelt, Minor und Patch",
+      "matchDepTypes": [
+        "devDependencies",
+        "dev-dependencies",
+        "build-dependencies"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch"
+      ],
+      "groupName": "dev dependencies",
+      "automerge": true
+    },
+    {
+      "description": "Actions geb\u00fcndelt, immer per Digest gepinnt",
+      "matchManagers": [
+        "github-actions"
+      ],
+      "groupName": "github actions",
+      "pinDigests": true
+    },
+    {
+      "description": "Container-Images per Digest",
+      "matchDatasources": [
+        "docker"
+      ],
+      "pinDigests": true
+    },
+    {
+      "description": "Major-Spr\u00fcnge nie automatisch",
+      "matchUpdateTypes": [
+        "major"
+      ],
+      "automerge": false,
+      "dependencyDashboardApproval": true
+    }
+  ],
+  "vulnerabilityAlerts": {
+    "labels": [
+      "security"
+    ],
+    "schedule": [
+      "at any time"
+    ],
+    "prPriority": 10
+  },
+  "osvVulnerabilityAlerts": true
+}
