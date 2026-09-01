@@ -1,0 +1,988 @@
+name: Release
+
+# Hardened release pipeline. Started only by release-please, through
+# `gh workflow run release.yml --ref "$TAG"`. There is deliberately no tag or
+# release trigger here: with one, every tag creation would run two pipelines.
+#
+# Stages, each blocking the next:
+#
+#   1 metadata          identity of the tag and the commit it points at
+#   2 build             one build per target, audited, smoke tested
+#   3 sign, attest      cosign keyless, build provenance, SPDX SBOM
+#   4 candidate         completeness enforced, everything verified, SHA256SUMS
+#   5 package metadata  Homebrew formula and PKGBUILD, signed
+#   6 preflight         channel credentials, verified without mutating anything
+#   7 stage             assets attached to the draft, read back, then prerelease
+#   8 publish           every channel, each verified against its public source
+#   9 promote           latest, only once every channel succeeded
+#
+# A tag with a prerelease suffix stops after stage 7. It never reaches the
+# package channels, so it needs none of their credentials, which makes it the
+# test vehicle the standard requires before adopting a change here.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: '1'
+  CARGO_DEB_VERSION: 3.7.0
+
+jobs:
+  metadata:
+    name: Validate release identity
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.identity.outputs.version }}
+      tag: ${{ steps.identity.outputs.tag }}
+      source_commit: ${{ steps.identity.outputs.source_commit }}
+      source_date_epoch: ${{ steps.identity.outputs.source_date_epoch }}
+      is_prerelease: ${{ steps.identity.outputs.is_prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - name: Read and check the identity of this release
+        id: identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE:-}" != tag ]]; then
+            echo "::error::RL1001 this workflow must be dispatched against a tag, got ${GITHUB_REF_TYPE:-none}"
+            exit 1
+          fi
+          tag="$GITHUB_REF_NAME"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::RL1002 tag is not a canonical SemVer name: $tag"
+            exit 1
+          fi
+          # No annotated-tag requirement here. release-please creates
+          # lightweight tags, so demanding an annotated one would reject every
+          # release it cuts. The property that requirement is meant to buy,
+          # namely that a published tag cannot later point elsewhere, is
+          # enforced server-side instead: the "Immutable release tags" ruleset
+          # forbids update, deletion and force-push on refs/tags/v*.
+          source_commit=$(git rev-parse "${tag}^{}")
+          if [[ "$source_commit" != "$GITHUB_SHA" ]]; then
+            echo "::error::RL1004 tag peels to $source_commit but the workflow runs from $GITHUB_SHA"
+            exit 1
+          fi
+          version="${tag#v}"
+          manifest_version=$(jq -r '."."' .release-please-manifest.json)
+          if [[ "$version" != "$manifest_version" ]]; then
+            echo "::error::RL1005 tag version $version does not match manifest version $manifest_version"
+            exit 1
+          fi
+          cargo_version=$(python3 -c "import tomllib;print(tomllib.load(open('Cargo.toml','rb'))['package']['version'])")
+          if [[ "$version" != "$cargo_version" ]]; then
+            echo "::error::RL1006 tag version $version does not match Cargo.toml version $cargo_version"
+            exit 1
+          fi
+          is_prerelease=false
+          [[ "$tag" == *-* ]] && is_prerelease=true
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+            echo "source_commit=$source_commit"
+            echo "source_date_epoch=$(git show -s --format=%ct "$source_commit")"
+            echo "is_prerelease=$is_prerelease"
+          } >> "$GITHUB_OUTPUT"
+          printf 'tag=%s version=%s prerelease=%s commit=%s\n' \
+            "$tag" "$version" "$is_prerelease" "$source_commit"
+
+  # Stage 6. Precondition for the publish jobs, not for staging the prerelease.
+  # A prerelease tag never reaches those, so it does not need the credentials.
+  preflight:
+    name: Validate publication credentials
+    needs: metadata
+    if: needs.metadata.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: release
+    env:
+      TAP_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      AUR_SSH_KNOWN_HOSTS: ${{ vars.AUR_SSH_KNOWN_HOSTS }}
+      HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+      AUR_PACKAGE_NAME: ${{ vars.AUR_PACKAGE_NAME }}
+    steps:
+      - name: Require every credential and variable
+        run: |
+          set -euo pipefail
+          for name in TAP_TOKEN AUR_SSH_PRIVATE_KEY CARGO_REGISTRY_TOKEN \
+                      AUR_SSH_KNOWN_HOSTS HOMEBREW_TAP_REPO AUR_PACKAGE_NAME; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::RL2001 release value is missing or empty: $name"
+              exit 1
+            fi
+          done
+          if [[ ! "$HOMEBREW_TAP_REPO" =~ ^[A-Za-z0-9._-]+/homebrew-tap$ ]]; then
+            echo "::error::RL2002 HOMEBREW_TAP_REPO is malformed: $HOMEBREW_TAP_REPO"
+            exit 1
+          fi
+
+      - name: Verify the tap token can write and open pull requests
+        env:
+          GH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+        run: |
+          set -euo pipefail
+          push=$(gh api "repos/${HOMEBREW_TAP_REPO}" --jq '.permissions.push')
+          if [[ "$push" != true ]]; then
+            echo "::error::RL2010 PACKAGE_PUBLISH_TOKEN cannot write to ${HOMEBREW_TAP_REPO}"
+            exit 1
+          fi
+          # A pull request from main to main can never be created, so this
+          # probes the permission without any side effect. With the permission
+          # GitHub answers 422 "No commits between main and main"; without it,
+          # "Resource not accessible by personal access token".
+          probe=$(gh api -X POST "repos/${HOMEBREW_TAP_REPO}/pulls" \
+            -f head=main -f base=main -f title='permission probe' 2>&1 || true)
+          if grep -qi 'Resource not accessible' <<<"$probe"; then
+            echo "::error::RL2011 PACKAGE_PUBLISH_TOKEN cannot open pull requests on ${HOMEBREW_TAP_REPO}."
+            echo "::error::Add the 'Pull requests: Read and write' repository permission to the token."
+            exit 1
+          fi
+          if ! grep -q 'No commits between' <<<"$probe"; then
+            echo "::error::RL2012 unexpected pull-request probe response"
+            printf '%s\n' "$probe"
+            exit 1
+          fi
+
+      - name: Verify the AUR key against the pinned host keys
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/ssh"
+          install -m 0600 /dev/null "$RUNNER_TEMP/ssh/aur"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/ssh/aur"
+          printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          if ! ssh-keygen -y -f "$RUNNER_TEMP/ssh/aur" >/dev/null 2>&1; then
+            echo "::error::RL2020 AUR_SSH_PRIVATE_KEY is not a readable private key"
+            exit 1
+          fi
+          if ! ssh-keygen -F aur.archlinux.org -f "$RUNNER_TEMP/ssh/known_hosts" >/dev/null; then
+            echo "::error::RL2021 AUR_SSH_KNOWN_HOSTS does not contain aur.archlinux.org"
+            exit 1
+          fi
+          if ! ssh -i "$RUNNER_TEMP/ssh/aur" \
+            -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$RUNNER_TEMP/ssh/known_hosts" \
+            aur@aur.archlinux.org help >/dev/null 2>&1; then
+            echo "::error::RL2022 aur.archlinux.org did not accept the release key"
+            exit 1
+          fi
+
+      - name: Verify the crates.io token
+        run: |
+          set -euo pipefail
+          status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --header "Authorization: ${CARGO_REGISTRY_TOKEN}" \
+            https://crates.io/api/v1/me)
+          if [[ "$status" != 200 ]]; then
+            echo "::error::RL2030 crates.io rejected CARGO_REGISTRY_TOKEN (HTTP $status)"
+            exit 1
+          fi
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: metadata
+    runs-on: ${{ matrix.os }}
+    container: ${{ matrix.container }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux builds run in a digest-pinned Debian container so the binaries
+          # link against a known glibc rather than whatever the runner ships.
+          - { target: x86_64-unknown-linux-gnu,   os: ubuntu-24.04,     container: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: amd64, runnable: true }
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-24.04,     container: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: '',    runnable: true }
+          - { target: aarch64-unknown-linux-gnu,  os: ubuntu-24.04-arm, container: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: arm64, runnable: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, container: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: '',    runnable: true }
+          - { target: x86_64-pc-windows-msvc,     os: windows-latest,   container: '', deb_arch: '', runnable: true }
+          - { target: aarch64-pc-windows-msvc,    os: windows-latest,   container: '', deb_arch: '', runnable: false }
+          - { target: x86_64-apple-darwin,        os: macos-15-intel,   container: '', deb_arch: '', runnable: true }
+          - { target: aarch64-apple-darwin,       os: macos-15,         container: '', deb_arch: '', runnable: true }
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+
+      - name: Install Linux prerequisites
+        if: matrix.container != ''
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends dpkg-dev file musl-tools
+
+      # rust-toolchain.toml is the single source of the toolchain. Adding the
+      # cross target through an action would attach it to a differently named
+      # toolchain and the build would fail with "can't find crate for std".
+      - name: Install the pinned toolchain and the target
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          rustup show
+          rustup target add "$TARGET"
+          rustc --version --verbose
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: release-${{ matrix.target }}
+
+      - name: Build
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.source_date_epoch }}
+        run: cargo build --release --locked --target "$TARGET"
+
+      - name: Audit the dynamic linkage
+        if: matrix.runnable && runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          binary="target/${TARGET}/release/png2lvgl"
+          if [[ "$RUNNER_OS" == macOS ]]; then
+            otool -L "$binary" | tee "$RUNNER_TEMP/linkage.txt"
+            # A path under any of these means a build-machine dependency was
+            # baked into the artifact and it will not run on a user's Mac.
+            if grep -Eq '^\s+/(opt/homebrew|usr/local|Users|Volumes)/' "$RUNNER_TEMP/linkage.txt"; then
+              echo "::error::RL3010 the binary links against a non-system path"
+              exit 1
+            fi
+          else
+            ldd "$binary" 2>&1 | tee "$RUNNER_TEMP/linkage.txt" || true
+            if grep -Fq 'not found' "$RUNNER_TEMP/linkage.txt"; then
+              echo "::error::RL3011 the binary has an unresolved dynamic dependency"
+              exit 1
+            fi
+          fi
+
+      - name: Verify the binary reports its release version
+        if: matrix.runnable
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          binary="target/${TARGET}/release/png2lvgl"
+          [[ "$TARGET" == *windows* ]] && binary="${binary}.exe"
+          measured=$("$binary" --version)
+          printf 'measured version output: %s\n' "$measured"
+          if [[ "$measured" != *"$VERSION"* ]]; then
+            echo "::error::RL3020 binary reports '${measured}' which does not contain ${VERSION}"
+            exit 1
+          fi
+
+      # Prebuilt binary rather than `cargo install`, which would compile
+      # cargo-deb from source in every Linux matrix leg.
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        if: matrix.deb_arch != ''
+        with:
+          tool: cargo-deb@${{ env.CARGO_DEB_VERSION }}
+
+      - name: Build the Debian package
+        if: matrix.deb_arch != ''
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+          DEB_ARCH: ${{ matrix.deb_arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          deb="dist/png2lvgl_${VERSION}-1_${DEB_ARCH}.deb"
+          cargo deb --target "$TARGET" --no-build --output "$deb"
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb" > "$RUNNER_TEMP/deb-contents.txt"
+          cat "$RUNNER_TEMP/deb-contents.txt"
+          for path in ./usr/bin/png2lvgl ./usr/share/man/man1/png2lvgl.1; do
+            if ! grep -Fq " $path" "$RUNNER_TEMP/deb-contents.txt"; then
+              echo "::error::RL3030 the Debian package is missing $path"
+              exit 1
+            fi
+          done
+
+      - name: Create the archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist stage
+          case "$TARGET" in
+            *windows*)
+              archive="png2lvgl-${VERSION}-${TARGET}.zip"
+              cp "target/${TARGET}/release/png2lvgl.exe" stage/
+              cp README.md LICENSE stage/
+              (cd stage && 7z a "../dist/${archive}" png2lvgl.exe README.md LICENSE)
+              ;;
+            *)
+              archive="png2lvgl-${VERSION}-${TARGET}.tar.gz"
+              cp "target/${TARGET}/release/png2lvgl" stage/
+              chmod +x stage/png2lvgl
+              cp README.md LICENSE stage/
+              # clap_mangen writes the manpage into the build script output
+              # directory. Resolve it explicitly; a `find -exec cp` exits 0 when
+              # it matches nothing and would ship an archive without a manpage.
+              manpage=$(find "target/${TARGET}/release/build" -type f -name png2lvgl.1 -print -quit)
+              if [[ -z "$manpage" ]]; then
+                echo "::error::RL3040 generated manpage png2lvgl.1 not found for ${TARGET}"
+                exit 1
+              fi
+              # Not `install -D`: on macOS that flag takes an argument and means
+              # something unrelated, so the step failed with EX_USAGE there.
+              mkdir -p stage/share/man/man1
+              cp "$manpage" stage/share/man/man1/png2lvgl.1
+              chmod 644 stage/share/man/man1/png2lvgl.1
+              (cd stage && tar czf "../dist/${archive}" png2lvgl README.md LICENSE share)
+              ;;
+          esac
+          ls -l dist
+
+      # Stage 2, last part: start the shipped binary from the archive in a
+      # directory of its own, so a missing member or a broken permission bit is
+      # caught here rather than by a user.
+      - name: Clean-room smoke test of the archive
+        if: matrix.runnable && runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          room="$RUNNER_TEMP/clean-room"
+          rm -rf "$room" && mkdir -p "$room"
+          tar -xzf "dist/png2lvgl-${VERSION}-${TARGET}.tar.gz" -C "$room"
+          file "$room/png2lvgl"
+          "$room/png2lvgl" --help >/dev/null
+          "$room/png2lvgl" --version
+          test -f "$room/share/man/man1/png2lvgl.1"
+
+      - name: Generate the SBOM for the archive
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          file: dist/png2lvgl-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.${{ contains(matrix.target, 'windows') && 'zip' || 'tar.gz' }}
+          format: spdx-json
+          output-file: dist/png2lvgl-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.spdx.json
+          upload-artifact: false
+
+      - name: Generate the SBOM for the Debian package
+        if: matrix.deb_arch != ''
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          file: dist/png2lvgl_${{ needs.metadata.outputs.version }}-1_${{ matrix.deb_arch }}.deb
+          format: spdx-json
+          output-file: dist/png2lvgl_${{ needs.metadata.outputs.version }}-1_${{ matrix.deb_arch }}.spdx.json
+          upload-artifact: false
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.1
+
+      - name: Sign every subject keyless
+        shell: bash
+        run: |
+          set -euo pipefail
+          for subject in dist/*; do
+            case "$subject" in *.sigstore.json) continue ;; esac
+            cosign sign-blob --yes --bundle "${subject}.sigstore.json" "$subject"
+          done
+          ls -l dist
+
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: dist/*
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: build-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 14
+
+  candidate:
+    name: Assemble and verify the release candidate
+    needs: [metadata, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: build-*
+          path: candidate
+          merge-multiple: true
+
+      - name: Enforce the complete inventory
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          payloads=(
+            "png2lvgl-${VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+            "png2lvgl-${VERSION}-x86_64-unknown-linux-musl.tar.gz"
+            "png2lvgl-${VERSION}-aarch64-unknown-linux-gnu.tar.gz"
+            "png2lvgl-${VERSION}-aarch64-unknown-linux-musl.tar.gz"
+            "png2lvgl-${VERSION}-x86_64-apple-darwin.tar.gz"
+            "png2lvgl-${VERSION}-aarch64-apple-darwin.tar.gz"
+            "png2lvgl-${VERSION}-x86_64-pc-windows-msvc.zip"
+            "png2lvgl-${VERSION}-aarch64-pc-windows-msvc.zip"
+            "png2lvgl_${VERSION}-1_amd64.deb"
+            "png2lvgl_${VERSION}-1_arm64.deb"
+          )
+          for name in "${payloads[@]}"; do
+            for suffix in '' '.spdx.json' '.sigstore.json'; do
+              if [[ ! -f "candidate/${name}${suffix}" ]]; then
+                echo "::error::RL4001 missing from the candidate: ${name}${suffix}"
+                find candidate -maxdepth 1 -type f -print | sort
+                exit 1
+              fi
+            done
+          done
+          # Each payload brings an SBOM and a signature bundle, so the count
+          # follows from the list above rather than being restated here.
+          expected=$(( ${#payloads[@]} * 3 ))
+          measured=$(find candidate -maxdepth 1 -type f | wc -l | tr -d ' ')
+          if [[ "$measured" != "$expected" ]]; then
+            echo "::error::RL4002 candidate holds ${measured} files; expected ${expected}"
+            find candidate -maxdepth 1 -type f -print | sort
+            exit 1
+          fi
+          listing="$RUNNER_TEMP/archive-listing.txt"
+          for archive in candidate/*.tar.gz; do
+            tar tzf "$archive" > "$listing"
+            for member in png2lvgl README.md LICENSE share/man/man1/png2lvgl.1; do
+              if ! grep -Fxq "$member" "$listing"; then
+                echo "::error::RL4003 $(basename "$archive") is missing ${member}"
+                exit 1
+              fi
+            done
+          done
+          for sbom in candidate/*.spdx.json; do
+            jq -e '.spdxVersion | startswith("SPDX-")' "$sbom" >/dev/null
+          done
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.1
+
+      - name: Verify every signature and attestation
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}"
+          issuer="https://token.actions.githubusercontent.com"
+          for bundle in candidate/*.sigstore.json; do
+            subject="${bundle%.sigstore.json}"
+            cosign verify-blob --bundle "$bundle" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$issuer" "$subject"
+          done
+          for subject in candidate/*; do
+            case "$subject" in *.sigstore.json) continue ;; esac
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY"
+          done
+
+      - name: Write the checksum inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          (cd candidate && find . -maxdepth 1 -type f -printf '%f\n' | LC_ALL=C sort | \
+            xargs sha256sum) > "$RUNNER_TEMP/SHA256SUMS"
+          mv "$RUNNER_TEMP/SHA256SUMS" candidate/SHA256SUMS
+          cat candidate/SHA256SUMS
+
+      - name: Generate the package metadata
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}"
+          scripts/release/generate-homebrew-formula.sh \
+            --version "$VERSION" --base-url "$base" \
+            --candidate-dir candidate --output candidate/png2lvgl.rb
+          ruby -c candidate/png2lvgl.rb
+          if [[ $(grep -Fc "/releases/download/${TAG}/" candidate/png2lvgl.rb) != 2 ]]; then
+            echo "::error::RL4010 the formula does not reference exactly two URLs of this tag"
+            exit 1
+          fi
+          url="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${TAG}.tar.gz"
+          curl --fail --silent --show-error --location "$url" \
+            --output "$RUNNER_TEMP/source.tar.gz"
+          scripts/release/generate-pkgbuild.sh \
+            --version "$VERSION" --url "$url" \
+            --source-archive "$RUNNER_TEMP/source.tar.gz" \
+            --output candidate/PKGBUILD
+          bash -n candidate/PKGBUILD
+
+      - name: Sign the package metadata and the checksum inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          for subject in candidate/png2lvgl.rb candidate/PKGBUILD candidate/SHA256SUMS; do
+            cosign sign-blob --yes --bundle "${subject}.sigstore.json" "$subject"
+          done
+
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-path: |
+            candidate/SHA256SUMS
+            candidate/png2lvgl.rb
+            candidate/PKGBUILD
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: release-candidate
+          path: candidate/*
+          if-no-files-found: error
+          retention-days: 14
+
+  homebrew-qualify:
+    name: Homebrew qualification (${{ matrix.os }})
+    needs: [metadata, candidate]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-15, macos-15-intel]
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate
+          path: candidate
+      - uses: Homebrew/actions/setup-homebrew@3cdb78d0f62ad29dd32de765782654f4eedea607
+        with:
+          core: false
+          cask: false
+      - name: Audit, install and test the exact formula
+        shell: bash
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_ANALYTICS: '1'
+        run: |
+          set -euo pipefail
+          port=38080
+          tap=png2lvgl/qualification
+          python3 -m http.server "$port" --bind 127.0.0.1 \
+            --directory candidate >"$RUNNER_TEMP/http.log" 2>&1 &
+          server_pid=$!
+          cleanup() {
+            brew uninstall png2lvgl >/dev/null 2>&1 || true
+            brew untap "$tap" >/dev/null 2>&1 || true
+            kill "$server_pid" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for attempt in {1..20}; do
+            curl --fail --silent "http://127.0.0.1:${port}/png2lvgl.rb" >/dev/null && break
+            if [[ "$attempt" == 20 ]]; then
+              echo "::error::RL5001 the local candidate server did not become ready"
+              exit 1
+            fi
+            sleep 1
+          done
+          brew tap-new --no-git "$tap"
+          formula="$(brew --repository "$tap")/Formula/png2lvgl.rb"
+          # Only the directory part of the URL changes, so Homebrew still scans
+          # the version from the filename.
+          sed -E "s#https://github.com/${GITHUB_REPOSITORY}/releases/download/[^/\"]+#http://127.0.0.1:${port}#g" \
+            candidate/png2lvgl.rb > "$formula"
+          if [[ $(grep -c "url \"http://127.0.0.1:${port}/" "$formula") != 2 ]]; then
+            echo "::error::RL5002 the formula must retain exactly two host URLs"
+            exit 1
+          fi
+          ruby -c "$formula"
+          brew audit --strict "$tap/png2lvgl"
+          brew install "$tap/png2lvgl"
+          brew test "$tap/png2lvgl"
+          test -f "$(brew --prefix png2lvgl)/share/man/man1/png2lvgl.1"
+          brew uninstall png2lvgl
+          brew untap "$tap"
+
+  aur-qualify:
+    name: AUR qualification
+    needs: [metadata, candidate]
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel@sha256:a26046b7363dad8e2614858f4313949ae9b05c9c5f31de343a54864b9e20806f
+    timeout-minutes: 45
+    steps:
+      - name: Install Arch build prerequisites
+        run: pacman -Syu --noconfirm --needed git rust
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate
+          path: candidate
+
+      - name: Build, verify and install the measured package
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          cat candidate/PKGBUILD
+          useradd --create-home builder
+          work=/home/builder/package
+          install -d -o builder -g builder "$work"
+          install -o builder -g builder -m 0644 candidate/PKGBUILD "$work/PKGBUILD"
+          # makepkg downloads the real source tarball and enforces the measured
+          # sha256sums, so this exercises exactly what an AUR user gets.
+          su builder -c "cd '$work' && makepkg --cleanbuild --noconfirm"
+          # makepkg also emits png2lvgl-debug-<version>. Select the real package
+          # by name and insist on exactly one match: `find -print -quit` returns
+          # whichever the directory order yields first, which has already picked
+          # the debug package on one machine.
+          mapfile -t packages < <(find "$work" -maxdepth 1 -type f \
+            -name "png2lvgl-${VERSION}-*.pkg.tar.zst" ! -name '*debug*' | sort)
+          if [[ ${#packages[@]} != 1 ]]; then
+            echo "::error::RL6001 expected exactly one png2lvgl package, found ${#packages[@]}"
+            find "$work" -maxdepth 1 -type f -name '*.pkg.tar.zst' -print | sort
+            exit 1
+          fi
+          package="${packages[0]}"
+          echo "selected package: $(basename "$package")"
+          # Assert the payload on the package rather than on the installed tree.
+          # This image ships `NoExtract = usr/share/man/*` in pacman.conf, so
+          # those paths are never written to disk here even though the package
+          # carries them. What an AUR user receives is the package.
+          listing="$RUNNER_TEMP/package-listing.txt"
+          bsdtar -tf "$package" > "$listing"
+          sort "$listing"
+          if ! grep -Fxq 'usr/bin/png2lvgl' "$listing"; then
+            echo "::error::RL6002 the built package ships no binary"
+            exit 1
+          fi
+          if ! grep -Eq '^usr/share/man/man1/png2lvgl\.1(\.gz)?$' "$listing"; then
+            echo "::error::RL6003 the built package ships no manpage"
+            exit 1
+          fi
+          pacman -U --noconfirm "$package"
+          measured=$(png2lvgl --version)
+          printf 'installed version output: %s\n' "$measured"
+          if [[ "$measured" != *"$VERSION"* ]]; then
+            echo "::error::RL6004 the installed package reports '${measured}' without ${VERSION}"
+            exit 1
+          fi
+          png2lvgl --help >/dev/null
+
+  stage:
+    name: Stage the prerelease
+    needs: [metadata, candidate, homebrew-qualify, aur-qualify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate
+          path: candidate
+
+      # release-please has already created the tag and a draft release. That
+      # draft is the normal case. Abort only on a published release, since
+      # changing one would alter something already delivered.
+      - name: Require a draft or absent release
+        run: |
+          set -euo pipefail
+          state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft 2>/dev/null || echo absent)
+          case "$state" in
+            absent)
+              gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+                --draft --verify-tag --generate-notes --title "png2lvgl $TAG"
+              ;;
+            true) ;;
+            false)
+              echo "::error::RL7001 release $TAG is already published"
+              exit 1
+              ;;
+          esac
+          if [[ $(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets | length') != 0 ]]; then
+            echo "::error::RL7002 the draft release $TAG already carries assets"
+            exit 1
+          fi
+
+      - name: Attach every candidate file
+        run: |
+          set -euo pipefail
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" candidate/*
+
+      - name: Read the release back and verify it
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir isolated
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --dir isolated
+          measured=$(find isolated -maxdepth 1 -type f | wc -l | tr -d ' ')
+          expected=$(find candidate -maxdepth 1 -type f | wc -l | tr -d ' ')
+          if [[ "$measured" != "$expected" ]]; then
+            echo "::error::RL7010 the release carries ${measured} assets; expected ${expected}"
+            exit 1
+          fi
+          (cd isolated && sha256sum -c SHA256SUMS)
+
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.1
+
+      - name: Verify the downloaded bytes, not the built ones
+        run: |
+          set -euo pipefail
+          identity="https://github.com/${GITHUB_REPOSITORY}/.github/workflows/release.yml@refs/tags/${TAG}"
+          issuer="https://token.actions.githubusercontent.com"
+          for bundle in isolated/*.sigstore.json; do
+            subject="${bundle%.sigstore.json}"
+            cosign verify-blob --bundle "$bundle" \
+              --certificate-identity "$identity" \
+              --certificate-oidc-issuer "$issuer" "$subject"
+          done
+          for subject in isolated/*; do
+            case "$subject" in *.sigstore.json) continue ;; esac
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY"
+          done
+
+      - name: Make the unchanged draft visible as a non-latest prerelease
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --draft=false --prerelease --latest=false
+
+  publish-homebrew:
+    name: Publish the Homebrew formula
+    needs: [metadata, preflight, stage]
+    if: needs.metadata.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    environment: release
+    env:
+      GH_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+      TAP_TOKEN: ${{ secrets.PACKAGE_PUBLISH_TOKEN }}
+      TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+      VERSION: ${{ needs.metadata.outputs.version }}
+      TAG: ${{ needs.metadata.outputs.tag }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate
+          path: candidate
+
+      - name: Open a formula update pull request
+        id: update
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_formula="${GITHUB_WORKSPACE}/candidate/png2lvgl.rb"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/${TAP_REPO}.git" \
+            "$RUNNER_TEMP/tap"
+          cd "$RUNNER_TEMP/tap"
+          if [[ -f Formula/png2lvgl.rb ]] && cmp -s "$source_formula" Formula/png2lvgl.rb; then
+            echo 'pr=' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          branch="release/png2lvgl-${VERSION}-${GITHUB_RUN_ID}"
+          # Recorded before the push, so the cleanup step below can remove the
+          # branch even when this step dies part way through.
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          git switch -c "$branch"
+          install -m 0644 "$source_formula" Formula/png2lvgl.rb
+          git config user.name 'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git add Formula/png2lvgl.rb
+          # The tap fails closed if README.md does not match its formulas.
+          if [[ -x scripts/generate-readme.sh ]]; then
+            scripts/generate-readme.sh
+            git add README.md
+          fi
+          git commit -m "png2lvgl ${VERSION}"
+          git push -u origin "$branch"
+          pr=$(gh pr create --repo "$TAP_REPO" --base main --head "$branch" \
+            --title "png2lvgl ${VERSION}" \
+            --body "Automated update from the verified ${TAG} prerelease assets. The stable release stays blocked until every tap qualification lane passes.")
+          echo "pr=$pr" >> "$GITHUB_OUTPUT"
+
+      # A branch pushed without a pull request is unreachable and, because the
+      # branch name carries the run id, blocks a re-run of this very job.
+      - name: Remove an orphaned branch from the tap
+        if: failure() && steps.update.outputs.branch != '' && steps.update.outputs.pr == ''
+        env:
+          BRANCH: ${{ steps.update.outputs.branch }}
+        run: gh api -X DELETE "repos/${TAP_REPO}/git/refs/heads/${BRANCH}"
+
+      - name: Require tap qualification, then merge
+        if: steps.update.outputs.pr != ''
+        env:
+          PR: ${{ steps.update.outputs.pr }}
+        run: |
+          set -euo pipefail
+          # `gh pr checks --watch` errors out when no check has been registered
+          # yet, which races the tap workflow starting.
+          for attempt in {1..18}; do
+            gh pr checks "$PR" --repo "$TAP_REPO" >/dev/null 2>&1 && break
+            if [[ "$attempt" == 18 ]]; then
+              echo "::error::RL8001 the tap reported no checks for $PR"
+              exit 1
+            fi
+            sleep 10
+          done
+          gh pr checks "$PR" --repo "$TAP_REPO" --watch --fail-fast --interval 20
+          gh pr merge "$PR" --repo "$TAP_REPO" --squash --delete-branch
+
+      - name: Verify the formula now on protected main
+        run: |
+          set -euo pipefail
+          gh api "repos/${TAP_REPO}/contents/Formula/png2lvgl.rb?ref=main" \
+            --jq .content | base64 --decode > "$RUNNER_TEMP/published.rb"
+          cmp "$RUNNER_TEMP/published.rb" candidate/png2lvgl.rb
+
+  publish-aur:
+    name: Publish the AUR package
+    needs: [metadata, preflight, stage, publish-homebrew]
+    if: needs.metadata.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    env:
+      VERSION: ${{ needs.metadata.outputs.version }}
+      AUR_PACKAGE_NAME: ${{ vars.AUR_PACKAGE_NAME }}
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      AUR_SSH_KNOWN_HOSTS: ${{ vars.AUR_SSH_KNOWN_HOSTS }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: release-candidate
+          path: candidate
+
+      # Own SSH clone rather than a third-party action, with pinned host keys
+      # and StrictHostKeyChecking=yes instead of a trust-on-first-use keyscan.
+      - name: Push the qualified PKGBUILD
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -d -m 0700 "$RUNNER_TEMP/ssh"
+          install -m 0600 /dev/null "$RUNNER_TEMP/ssh/aur"
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/ssh/aur"
+          printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" > "$RUNNER_TEMP/ssh/known_hosts"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/ssh/aur -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/ssh/known_hosts"
+          git -c init.defaultBranch=master clone \
+            "ssh://aur@aur.archlinux.org/${AUR_PACKAGE_NAME}.git" "$RUNNER_TEMP/aur"
+          cd "$RUNNER_TEMP/aur"
+          install -m 0644 "$GITHUB_WORKSPACE/candidate/PKGBUILD" PKGBUILD
+          # .SRCINFO is generated, never hand-maintained.
+          docker run --rm --user "$(id -u):$(id -g)" --env HOME=/tmp \
+            --volume "$PWD:/pkg" --workdir /pkg \
+            archlinux:base-devel@sha256:a26046b7363dad8e2614858f4313949ae9b05c9c5f31de343a54864b9e20806f \
+            makepkg --printsrcinfo > .SRCINFO
+          if [[ -z $(git status --short) ]]; then
+            echo 'AUR already carries this content, nothing to push'
+            exit 0
+          fi
+          git config user.name 'png2lvgl release automation'
+          git config user.email 'aur@metaneutrons.github.io'
+          git add PKGBUILD .SRCINFO
+          git commit -m "png2lvgl ${VERSION}-1"
+          git push origin HEAD:master
+
+      - name: Verify the public AUR metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in {1..20}; do
+            if curl --fail --silent --show-error --get \
+              --data-urlencode 'v=5' --data-urlencode 'type=info' \
+              --data-urlencode "arg[]=${AUR_PACKAGE_NAME}" \
+              https://aur.archlinux.org/rpc | \
+              jq -e --arg version "${VERSION}-1" \
+                '.resultcount == 1 and .results[0].Version == $version' >/dev/null; then
+              exit 0
+            fi
+            if [[ "$attempt" == 20 ]]; then
+              echo "::error::RL8020 the AUR metadata did not converge to ${VERSION}-1"
+              exit 1
+            fi
+            sleep 15
+          done
+
+  publish-crates:
+    name: Publish to crates.io
+    needs: [metadata, preflight, stage, publish-homebrew, publish-aur]
+    if: needs.metadata.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+      - run: rustup show
+      # Publishing to crates.io cannot be undone, only yanked, so it runs last:
+      # every reversible channel has already been published and verified. A
+      # failed publish is never retried with the same version; the repair is a
+      # patch release.
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: cargo publish --workspace --locked
+
+      - name: Verify the published version
+        run: |
+          set -euo pipefail
+          version='${{ needs.metadata.outputs.version }}'
+          for attempt in {1..20}; do
+            published=$(curl --fail --silent --show-error \
+              --header 'User-Agent: png2lvgl-release' \
+              https://crates.io/api/v1/crates/png2lvgl | jq -r '.crate.max_version')
+            [[ "$published" == "$version" ]] && exit 0
+            if [[ "$attempt" == 20 ]]; then
+              echo "::error::RL8030 crates.io reports $published, expected $version"
+              exit 1
+            fi
+            sleep 15
+          done
+
+  promote:
+    name: Promote to latest
+    needs: [metadata, publish-homebrew, publish-aur, publish-crates]
+    if: needs.metadata.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Promote the already verified prerelease without touching its assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.metadata.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest

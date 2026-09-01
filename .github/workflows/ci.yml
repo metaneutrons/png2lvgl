@@ -26,7 +26,7 @@ jobs:
       # Kein dtolnay/rust-toolchain: die Version steht in rust-toolchain.toml
       # und rustup installiert sie daraus. Zwei Quellen wären eine Fehlerquelle.
       - run: rustup show
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - run: cargo fmt --all -- --check
       # Das lefthook-Repo hat kein install.sh. Binary aus dem Release-Asset,
       # Version gepinnt wie jede andere Abhängigkeit.
@@ -60,7 +60,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup show
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
         with:
           tool: cargo-nextest,cargo-llvm-cov
@@ -77,7 +77,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup toolchain install 1.88 --profile minimal
-      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # rust-toolchain.toml überschreibt die rustup-Auswahl, ein blankes cargo
       # würde hier also 1.98 prüfen und nichts beweisen. Nur ein ausdrückliches
       # +toolchain schlägt die Datei.
