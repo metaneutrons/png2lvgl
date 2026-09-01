@@ -115,3 +115,105 @@ pub fn validate_output_path(path: &Path, overwrite: bool) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::{
+        MAX_HEIGHT, MAX_WIDTH, PNG_HEADER, validate_dimensions, validate_input_file,
+        validate_output_path,
+    };
+
+    /// Smallest thing `validate_input_file` accepts: the magic bytes are all it
+    /// reads, decoding happens later.
+    fn write_png_stub(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
+        let path = dir.join(name);
+        fs::write(&path, PNG_HEADER).expect("write stub");
+        path
+    }
+
+    #[test]
+    fn missing_input_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let err = validate_input_file(&dir.path().join("absent.png")).unwrap_err();
+        assert!(
+            err.to_string().to_lowercase().contains("not found"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_file_without_png_magic_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("not-a-png.png");
+        fs::write(&path, b"GIF89a  this is not a png at all").expect("write");
+        assert!(validate_input_file(&path).is_err());
+    }
+
+    /// Truncated shorter than the magic bytes: `read_exact` fails rather than the
+    /// comparison, and that path must also be an error.
+    #[test]
+    fn a_truncated_file_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("short.png");
+        fs::write(&path, b"\x89PNG").expect("write");
+        assert!(validate_input_file(&path).is_err());
+    }
+
+    #[test]
+    fn png_magic_is_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = write_png_stub(dir.path(), "ok.png");
+        assert!(validate_input_file(&path).is_ok());
+    }
+
+    #[test]
+    fn zero_dimensions_are_rejected() {
+        assert!(validate_dimensions(0, 1).is_err());
+        assert!(validate_dimensions(1, 0).is_err());
+        assert!(validate_dimensions(0, 0).is_err());
+    }
+
+    #[test]
+    fn dimensions_at_the_limit_are_accepted() {
+        assert!(validate_dimensions(1, 1).is_ok());
+        assert!(validate_dimensions(MAX_WIDTH, MAX_HEIGHT).is_ok());
+    }
+
+    #[test]
+    fn dimensions_past_the_limit_are_rejected() {
+        assert!(validate_dimensions(MAX_WIDTH + 1, MAX_HEIGHT).is_err());
+        assert!(validate_dimensions(MAX_WIDTH, MAX_HEIGHT + 1).is_err());
+    }
+
+    #[test]
+    fn an_existing_output_needs_the_overwrite_flag() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("out.c");
+        fs::write(&path, b"previous contents").expect("write");
+
+        assert!(validate_output_path(&path, false).is_err());
+        assert!(validate_output_path(&path, true).is_ok());
+    }
+
+    #[test]
+    fn a_new_output_in_an_existing_directory_is_accepted() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert!(validate_output_path(&dir.path().join("fresh.c"), false).is_ok());
+    }
+
+    #[test]
+    fn an_output_in_a_missing_directory_is_rejected() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("no-such-dir").join("out.c");
+        assert!(validate_output_path(&path, false).is_err());
+    }
+
+    /// A bare filename has an empty parent. That must not be mistaken for a
+    /// missing directory.
+    #[test]
+    fn a_bare_filename_is_accepted() {
+        assert!(validate_output_path(std::path::Path::new("out.c"), true).is_ok());
+    }
+}

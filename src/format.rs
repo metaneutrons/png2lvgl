@@ -185,3 +185,155 @@ fn count_unique_colors(img: &DynamicImage) -> usize {
 
     colors.len()
 }
+
+#[cfg(test)]
+mod tests {
+    use image::{DynamicImage, Rgb, RgbImage, Rgba, RgbaImage};
+
+    use super::{ColorFormat, LvglVersion, detect, validate};
+
+    /// Opaque image whose pixels cycle through `colors`.
+    fn rgb_image(width: u32, height: u32, colors: &[[u8; 3]]) -> DynamicImage {
+        let mut img = RgbImage::new(width, height);
+        for (index, pixel) in img.pixels_mut().enumerate() {
+            *pixel = Rgb(colors[index % colors.len()]);
+        }
+        DynamicImage::ImageRgb8(img)
+    }
+
+    fn rgba_image(width: u32, height: u32) -> DynamicImage {
+        let img = RgbaImage::from_fn(width, height, |x, _| {
+            Rgba([0, 0, 0, u8::try_from(x % 256).unwrap_or(0)])
+        });
+        DynamicImage::ImageRgba8(img)
+    }
+
+    #[test]
+    fn bpp_is_set_for_indexed_and_alpha_only() {
+        assert_eq!(ColorFormat::Indexed1.bpp(), Some(1));
+        assert_eq!(ColorFormat::Indexed2.bpp(), Some(2));
+        assert_eq!(ColorFormat::Indexed4.bpp(), Some(4));
+        assert_eq!(ColorFormat::Indexed8.bpp(), Some(8));
+        assert_eq!(ColorFormat::Alpha1.bpp(), Some(1));
+        assert_eq!(ColorFormat::Alpha8.bpp(), Some(8));
+        assert_eq!(ColorFormat::TrueColor.bpp(), None);
+        assert_eq!(ColorFormat::TrueColorAlpha.bpp(), None);
+        assert_eq!(ColorFormat::Auto.bpp(), None);
+    }
+
+    /// The v8 and v9 constant families are disjoint. A format that returned the
+    /// same name for both versions would silently emit v8 names into a v9 file.
+    #[test]
+    fn lvgl_constants_differ_between_versions() {
+        let formats = [
+            ColorFormat::TrueColor,
+            ColorFormat::TrueColorAlpha,
+            ColorFormat::TrueColorChroma,
+            ColorFormat::Indexed1,
+            ColorFormat::Indexed2,
+            ColorFormat::Indexed4,
+            ColorFormat::Indexed8,
+            ColorFormat::Alpha1,
+            ColorFormat::Alpha2,
+            ColorFormat::Alpha4,
+            ColorFormat::Alpha8,
+        ];
+        for format in &formats {
+            let v8 = format.lvgl_const(LvglVersion::V8);
+            let v9 = format.lvgl_const(LvglVersion::V9);
+            assert_ne!(v8, v9, "{format:?} yields the same constant for v8 and v9");
+            assert!(v8.starts_with("LV_IMG_CF_"), "unexpected v8 constant {v8}");
+            assert!(
+                v9.starts_with("LV_COLOR_FORMAT_"),
+                "unexpected v9 constant {v9}"
+            );
+        }
+    }
+
+    #[test]
+    fn auto_has_no_constant() {
+        assert_eq!(ColorFormat::Auto.lvgl_const(LvglVersion::V8), "auto");
+        assert_eq!(ColorFormat::Auto.lvgl_const(LvglVersion::V9), "auto");
+    }
+
+    #[test]
+    fn descriptions_are_present_and_unique() {
+        let formats = [
+            ColorFormat::Auto,
+            ColorFormat::TrueColor,
+            ColorFormat::TrueColorAlpha,
+            ColorFormat::TrueColorChroma,
+            ColorFormat::Indexed1,
+            ColorFormat::Indexed2,
+            ColorFormat::Indexed4,
+            ColorFormat::Indexed8,
+            ColorFormat::Alpha1,
+            ColorFormat::Alpha2,
+            ColorFormat::Alpha4,
+            ColorFormat::Alpha8,
+        ];
+        let mut seen = std::collections::HashSet::new();
+        for format in &formats {
+            let text = format.description();
+            assert!(!text.is_empty(), "{format:?} has an empty description");
+            assert!(seen.insert(text), "duplicate description: {text}");
+        }
+    }
+
+    #[test]
+    fn rgb565_and_alpha_flags() {
+        assert!(ColorFormat::TrueColor.is_rgb565());
+        assert!(ColorFormat::TrueColorAlpha.is_rgb565());
+        assert!(!ColorFormat::Indexed8.is_rgb565());
+        assert!(!ColorFormat::Alpha8.is_rgb565());
+
+        assert!(ColorFormat::TrueColorAlpha.has_alpha());
+        assert!(!ColorFormat::TrueColor.has_alpha());
+        assert!(!ColorFormat::Indexed8.has_alpha());
+    }
+
+    #[test]
+    fn detect_follows_the_alpha_channel() {
+        let opaque = rgb_image(2, 2, &[[255, 0, 0]]);
+        assert!(matches!(detect(&opaque), ColorFormat::TrueColor));
+
+        let transparent = rgba_image(2, 2);
+        assert!(matches!(detect(&transparent), ColorFormat::TrueColorAlpha));
+    }
+
+    #[test]
+    fn true_color_accepts_any_image() {
+        let img = rgb_image(4, 4, &[[1, 2, 3], [4, 5, 6], [7, 8, 9]]);
+        assert!(validate(&img, &ColorFormat::TrueColor).is_ok());
+        assert!(validate(&img, &ColorFormat::Auto).is_ok());
+    }
+
+    #[test]
+    fn indexed_accepts_a_palette_that_fits() {
+        let two = rgb_image(4, 4, &[[0, 0, 0], [255, 255, 255]]);
+        assert!(validate(&two, &ColorFormat::Indexed1).is_ok());
+        assert!(validate(&two, &ColorFormat::Indexed8).is_ok());
+    }
+
+    #[test]
+    fn indexed_rejects_a_palette_that_is_too_large() {
+        let three = rgb_image(3, 1, &[[0, 0, 0], [255, 255, 255], [255, 0, 0]]);
+        let err = validate(&three, &ColorFormat::Indexed1).unwrap_err();
+        let text = err.to_string();
+        assert!(
+            text.contains('3'),
+            "error should name the colour count: {text}"
+        );
+    }
+
+    /// Only the RGB triple counts, so alpha variations must not inflate the
+    /// palette and push an otherwise valid image over the limit.
+    #[test]
+    fn palette_ignores_the_alpha_channel() {
+        let img = RgbaImage::from_fn(4, 1, |x, _| {
+            Rgba([0, 0, 0, u8::try_from(x * 60).unwrap_or(0)])
+        });
+        let img = DynamicImage::ImageRgba8(img);
+        assert!(validate(&img, &ColorFormat::Indexed1).is_ok());
+    }
+}

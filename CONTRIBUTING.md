@@ -22,8 +22,9 @@ Be respectful and constructive in all interactions.
 # Install Rust (if not already installed)
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# Install the commit hook tooling (husky and commitlint)
-npm install
+# Install the commit hooks (lefthook, gitleaks)
+brew install lefthook gitleaks
+lefthook install
 
 # Build the project
 cargo build
@@ -57,7 +58,8 @@ fix: handle empty PNG files gracefully
 docs: update installation instructions
 ```
 
-Commits are validated by commitlint via husky hooks.
+Commits are validated by `scripts/hooks/check-commit-message.sh`, run through
+lefthook, and again by the `commit-hygiene` job in CI.
 
 ## Code Style
 
