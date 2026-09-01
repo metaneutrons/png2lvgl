@@ -532,20 +532,28 @@ jobs:
           fi
           package="${packages[0]}"
           echo "selected package: $(basename "$package")"
-          bsdtar -tf "$package" | sort
+          # Assert the payload on the package rather than on the installed tree.
+          # This image ships `NoExtract = usr/share/man/* usr/share/doc/*` in
+          # pacman.conf, so those paths are never written to disk here even
+          # though the package carries them. What an AUR user receives is the
+          # package, so that is what gets checked.
+          listing="$RUNNER_TEMP/package-listing.txt"
+          bsdtar -tf "$package" > "$listing"
+          sort "$listing"
+          if ! grep -Fxq 'usr/bin/png2lvgl' "$listing"; then
+            echo "::error::built package ships no binary"
+            exit 1
+          fi
+          # makepkg compresses manpages, so the member is .1.gz.
+          if ! grep -Eq '^usr/share/man/man1/png2lvgl\.1(\.gz)?$' "$listing"; then
+            echo "::error::built package ships no manpage"
+            exit 1
+          fi
           pacman -U --noconfirm "$package"
           measured=$(png2lvgl --version)
           printf 'installed version output: %s\n' "$measured"
           if [[ "$measured" != *"$VERSION"* ]]; then
             echo "::error::installed package reports '${measured}' without ${VERSION}"
-            exit 1
-          fi
-          # makepkg compresses manpages, so the installed file is .1.gz. Accept
-          # either so the check does not depend on that packaging detail.
-          if [[ ! -f /usr/share/man/man1/png2lvgl.1 && \
-                ! -f /usr/share/man/man1/png2lvgl.1.gz ]]; then
-            echo "::error::installed package ships no manpage"
-            ls -l /usr/share/man/man1/ || true
             exit 1
           fi
           png2lvgl --help >/dev/null
@@ -612,6 +620,18 @@ jobs:
           PR: ${{ steps.update.outputs.pr }}
         run: |
           set -euo pipefail
+          # `gh pr checks --watch` errors out when no check has been registered
+          # yet, which races the tap workflow starting. Wait for the first one.
+          for attempt in {1..18}; do
+            if gh pr checks "$PR" --repo "$TAP_REPOSITORY" >/dev/null 2>&1; then
+              break
+            fi
+            if [[ "$attempt" == 18 ]]; then
+              echo "::error::tap reported no checks for $PR"
+              exit 1
+            fi
+            sleep 10
+          done
           gh pr checks "$PR" --repo "$TAP_REPOSITORY" --watch --fail-fast --interval 20
           gh pr merge "$PR" --repo "$TAP_REPOSITORY" --squash --delete-branch
 
