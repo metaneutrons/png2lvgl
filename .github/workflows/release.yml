@@ -292,6 +292,13 @@ jobs:
             exit 1
           fi
 
+      # Prebuilt binary rather than `cargo install`, which would compile
+      # cargo-deb from source in every Linux matrix leg.
+      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+        if: matrix.deb_arch != ''
+        with:
+          tool: cargo-deb@${{ env.CARGO_DEB_VERSION }}
+
       - name: Build the Debian package
         if: matrix.deb_arch != ''
         shell: bash
@@ -301,7 +308,6 @@ jobs:
           DEB_ARCH: ${{ matrix.deb_arch }}
         run: |
           set -euo pipefail
-          cargo install cargo-deb --version "$CARGO_DEB_VERSION" --locked
           mkdir -p dist
           deb="dist/png2lvgl_${VERSION}-1_${DEB_ARCH}.deb"
           cargo deb --target "$TARGET" --no-build --output "$deb"
@@ -458,10 +464,12 @@ jobs:
               fi
             done
           done
-          # Ten payloads, each with an SBOM and a signature bundle.
+          # Each payload brings an SBOM and a signature bundle, so the count
+          # follows from the list above rather than being restated here.
+          expected=$(( ${#payloads[@]} * 3 ))
           measured=$(find candidate -maxdepth 1 -type f | wc -l | tr -d ' ')
-          if [[ "$measured" != 30 ]]; then
-            echo "::error::RL4002 candidate holds ${measured} files; expected 30"
+          if [[ "$measured" != "$expected" ]]; then
+            echo "::error::RL4002 candidate holds ${measured} files; expected ${expected}"
             find candidate -maxdepth 1 -type f -print | sort
             exit 1
           fi
