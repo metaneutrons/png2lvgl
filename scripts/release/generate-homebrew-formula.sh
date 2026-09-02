@@ -76,7 +76,7 @@ cat > "$OUTPUT" <<FORMULA
 class Png2lvgl < Formula
   desc "Convert PNG images to LVGL C arrays"
   homepage "https://github.com/metaneutrons/png2lvgl"
-  license "GPL-3.0-only"
+  license "GPL-3.0-or-later"
 
   on_macos do
     if Hardware::CPU.arm?

@@ -171,7 +171,7 @@ cargo build --release
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the GNU General Public License, version 3 or any later version. See the [LICENSE](LICENSE) file for details.
 
 ---
 
