@@ -414,7 +414,7 @@ jobs:
         with:
           file: dist/png2lvgl-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.${{ contains(matrix.target, 'windows') && 'zip' || 'tar.gz' }}
           format: spdx-json
-          output-file: dist/png2lvgl-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.spdx.json
+          output-file: dist/png2lvgl-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.${{ contains(matrix.target, 'windows') && 'zip' || 'tar.gz' }}.spdx.json
           upload-artifact: false
 
       - name: Generate the SBOM for the Debian package
@@ -423,7 +423,7 @@ jobs:
         with:
           file: dist/png2lvgl_${{ needs.metadata.outputs.version }}-1_${{ matrix.deb_arch }}.deb
           format: spdx-json
-          output-file: dist/png2lvgl_${{ needs.metadata.outputs.version }}-1_${{ matrix.deb_arch }}.spdx.json
+          output-file: dist/png2lvgl_${{ needs.metadata.outputs.version }}-1_${{ matrix.deb_arch }}.deb.spdx.json
           upload-artifact: false
 
       - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
@@ -434,8 +434,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Only payloads are signed. An SBOM describes a payload rather than
+          # being one, the signed SHA256SUMS of the candidate already covers it
+          # and attest-build-provenance attests it too. Giving it a bundle of
+          # its own would also break the inventory, which counts exactly one
+          # SBOM and one bundle per payload.
           for subject in dist/*; do
-            case "$subject" in *.sigstore.json) continue ;; esac
+            case "$subject" in *.sigstore.json|*.spdx.json) continue ;; esac
             cosign sign-blob --yes --bundle "${subject}.sigstore.json" "$subject"
           done
           ls -l dist
