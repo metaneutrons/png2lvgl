@@ -207,7 +207,6 @@ jobs:
     name: Build ${{ matrix.target }}
     needs: metadata
     runs-on: ${{ matrix.os }}
-    container: ${{ matrix.container }}
     timeout-minutes: 60
     permissions:
       contents: read
@@ -217,35 +216,45 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux builds run in a digest-pinned Debian container so the binaries
-          # link against a known glibc rather than whatever the runner ships.
-          - { target: x86_64-unknown-linux-gnu,   os: ubuntu-24.04,     container: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: amd64, runnable: true }
-          - { target: x86_64-unknown-linux-musl,  os: ubuntu-24.04,     container: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: '',    runnable: true }
-          - { target: aarch64-unknown-linux-gnu,  os: ubuntu-24.04-arm, container: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: arm64, runnable: true }
-          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, container: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: '',    runnable: true }
-          - { target: x86_64-pc-windows-msvc,     os: windows-latest,   container: '', deb_arch: '', runnable: true }
-          - { target: aarch64-pc-windows-msvc,    os: windows-latest,   container: '', deb_arch: '', runnable: false }
-          - { target: x86_64-apple-darwin,        os: macos-15-intel,   container: '', deb_arch: '', runnable: true }
-          - { target: aarch64-apple-darwin,       os: macos-15,         container: '', deb_arch: '', runnable: true }
+          # `image` is not a job container. It wraps the compile step alone,
+          # so the released Linux binaries link against bookworm's glibc rather
+          # than the runner's, while every other step keeps the full runner
+          # environment the actions expect.
+          - { target: x86_64-unknown-linux-gnu,   os: ubuntu-24.04,     image: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: amd64, runnable: true }
+          - { target: x86_64-unknown-linux-musl,  os: ubuntu-24.04,     image: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: '',    runnable: true }
+          - { target: aarch64-unknown-linux-gnu,  os: ubuntu-24.04-arm, image: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: arm64, runnable: true }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm, image: 'rust:1.98.0-bookworm@sha256:82150a52ec202c1b14d7817e14516c392bb7f5cfebd88f1ed531cb37ebd39922', deb_arch: '',    runnable: true }
+          - { target: x86_64-pc-windows-msvc,     os: windows-latest,   image: '', deb_arch: '', runnable: true }
+          - { target: aarch64-pc-windows-msvc,    os: windows-latest,   image: '', deb_arch: '', runnable: false }
+          - { target: x86_64-apple-darwin,        os: macos-15-intel,   image: '', deb_arch: '', runnable: true }
+          - { target: aarch64-apple-darwin,       os: macos-15,         image: '', deb_arch: '', runnable: true }
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
 
-      - name: Install Linux prerequisites
-        if: matrix.container != ''
-        # Inside a container Actions defaults to `sh -e`, not `bash`, because it
-        # cannot assume the image ships bash. Debian's dash rejects
-        # `set -o pipefail`, so without this the step dies before apt runs.
+      # These used to come from the build container. Measure what the runner
+      # already has rather than assuming it, and install only what is missing.
+      # dpkg-deb and file are needed by cargo-deb, envsubst by
+      # sigstore/cosign-installer, which exits 127 without it.
+      - name: Ensure the packaging tools exist on the runner
+        if: runner.os == 'Linux'
         shell: bash
         run: |
           set -euo pipefail
-          apt-get update
-          # gettext-base carries envsubst, which sigstore/cosign-installer
-          # uses to expand its install directory. Without it that action
-          # exits 127 and the leg dies before anything is signed.
-          apt-get install -y --no-install-recommends \
-            dpkg-dev file gettext-base musl-tools
+          missing=()
+          for tool in dpkg-deb file envsubst; do
+            command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            printf 'missing from the runner, installing: %s\n' "${missing[*]}"
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq --no-install-recommends \
+              dpkg-dev file gettext-base
+          fi
+          for tool in dpkg-deb file envsubst; do
+            printf '  %-10s %s\n' "$tool" "$(command -v "$tool")"
+          done
 
       # rust-toolchain.toml is the single source of the toolchain. Adding the
       # cross target through an action would attach it to a differently named
@@ -264,7 +273,38 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
+      # The image exists for one reason, namely that the released binaries link
+      # against bookworm's glibc instead of the runner's. That is a property of
+      # the compile and of nothing else, so the image wraps the compile alone.
+      # Three of the defects found while proving this pipeline were tool gaps in
+      # steps that ran in the container without ever needing it.
+      - name: Compile in the pinned image
+        if: matrix.image != ''
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          IMAGE: ${{ matrix.image }}
+          SOURCE_DATE_EPOCH: ${{ needs.metadata.outputs.source_date_epoch }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --volume "$PWD:/w" --workdir /w \
+            --env TARGET --env SOURCE_DATE_EPOCH --env CARGO_TERM_COLOR \
+            "$IMAGE" bash -c '
+              set -euo pipefail
+              apt-get update -qq
+              apt-get install -y -qq --no-install-recommends musl-tools
+              rustup show
+              rustup target add "$TARGET"
+              rustc --version --verbose
+              cargo build --release --locked --target "$TARGET"'
+          # The container runs as root, so everything it wrote into the mounted
+          # tree is root-owned while every later step runs as the runner user.
+          # Without this they fail on permissions rather than on anything real.
+          sudo chown -R "$(id -u):$(id -g)" target
+
       - name: Build
+        if: matrix.image == ''
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
