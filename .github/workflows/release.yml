@@ -622,7 +622,7 @@ jobs:
         with:
           name: release-candidate
           path: candidate
-      - uses: Homebrew/actions/setup-homebrew@3cdb78d0f62ad29dd32de765782654f4eedea607
+      - uses: Homebrew/actions/setup-homebrew@3cdb78d0f62ad29dd32de765782654f4eedea607 # 2026.08.31.1
         with:
           core: false
           cask: false
