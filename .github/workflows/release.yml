@@ -75,15 +75,22 @@ jobs:
             echo "::error::RL1004 tag peels to $source_commit but the workflow runs from $GITHUB_SHA"
             exit 1
           fi
+          # The version every artefact carries is the release core, not the
+          # whole tag name. A prerelease suffix marks a test run of this
+          # pipeline: it is by definition absent from the manifest and from
+          # Cargo.toml, and it must not reach pkgver, which Arch forbids from
+          # containing a hyphen. The tag stays the release identity, and every
+          # URL is built from the tag rather than from the version.
           version="${tag#v}"
+          version="${version%%-*}"
           manifest_version=$(jq -r '."."' .release-please-manifest.json)
           if [[ "$version" != "$manifest_version" ]]; then
-            echo "::error::RL1005 tag version $version does not match manifest version $manifest_version"
+            echo "::error::RL1005 release core $version of tag $tag does not match manifest version $manifest_version"
             exit 1
           fi
           cargo_version=$(python3 -c "import tomllib;print(tomllib.load(open('Cargo.toml','rb'))['package']['version'])")
           if [[ "$version" != "$cargo_version" ]]; then
-            echo "::error::RL1006 tag version $version does not match Cargo.toml version $cargo_version"
+            echo "::error::RL1006 release core $version of tag $tag does not match Cargo.toml version $cargo_version"
             exit 1
           fi
           is_prerelease=false
