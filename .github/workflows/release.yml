@@ -275,7 +275,7 @@ jobs:
             out=$(ldd "$binary" 2>&1 || true)
             printf '%s\n' "$out"
             if ! grep -Eq 'not a dynamic executable|statically linked' <<<"$out"; then
-              echo "::error::RL3012 the musl binary is not statically linked"
+              echo "::error::RL3012 ldd did not report ${binary} as static; its output is above"
               exit 1
             fi
           else
