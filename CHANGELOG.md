@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.11](https://github.com/metaneutrons/png2lvgl/compare/v0.3.10...v0.3.11) (2026-09-02)
+
+
+### Miscellaneous Chores
+
+* cut 0.3.11 to exercise the publish stages ([#97](https://github.com/metaneutrons/png2lvgl/issues/97)) ([b02683a](https://github.com/metaneutrons/png2lvgl/commit/b02683a5dc1b848f2f23ec23864eabce4755486c))
+
 ## [0.3.10](https://github.com/metaneutrons/png2lvgl/compare/v0.3.9...v0.3.10) (2026-09-02)
 
 
