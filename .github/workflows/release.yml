@@ -236,7 +236,11 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          apt-get install -y --no-install-recommends dpkg-dev file musl-tools
+          # gettext-base carries envsubst, which sigstore/cosign-installer
+          # uses to expand its install directory. Without it that action
+          # exits 127 and the leg dies before anything is signed.
+          apt-get install -y --no-install-recommends \
+            dpkg-dev file gettext-base musl-tools
 
       # rust-toolchain.toml is the single source of the toolchain. Adding the
       # cross target through an action would attach it to a differently named
@@ -314,12 +318,17 @@ jobs:
             exit 1
           fi
 
-      # Prebuilt binary rather than `cargo install`, which would compile
-      # cargo-deb from source in every Linux matrix leg.
-      - uses: taiki-e/install-action@b6ff580856c41316412a0b9b60540fbc6f8c82cc # v2.86.7
+      # Compiled here rather than fetched prebuilt. The cargo-deb project
+      # ships exactly one asset, an amd64 .deb linked against glibc 2.39,
+      # while this container is bookworm with 2.36, which is the very
+      # reason it was chosen. `cargo-deb --version` therefore dies on the
+      # amd64 leg, and for aarch64 there is no asset at all. Compiling it
+      # takes around twenty seconds, measured in this image, so the cost
+      # the previous comment feared does not exist.
+      - name: Install cargo-deb
         if: matrix.deb_arch != ''
-        with:
-          tool: cargo-deb@${{ env.CARGO_DEB_VERSION }}
+        shell: bash
+        run: cargo install cargo-deb --version "$CARGO_DEB_VERSION" --locked
 
       - name: Build the Debian package
         if: matrix.deb_arch != ''
