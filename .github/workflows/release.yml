@@ -114,10 +114,14 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     environment: release
+    permissions:
+      contents: read
+      # Minting the crates.io token is an OIDC exchange, so this job needs an
+      # identity token of its own.
+      id-token: write
     env:
       TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
-      CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
       AUR_SSH_KNOWN_HOSTS: ${{ vars.AUR_SSH_KNOWN_HOSTS }}
       HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
       AUR_PACKAGE_NAME: ${{ vars.AUR_PACKAGE_NAME }}
@@ -125,7 +129,7 @@ jobs:
       - name: Require every credential and variable
         run: |
           set -euo pipefail
-          for name in TAP_TOKEN AUR_SSH_PRIVATE_KEY CARGO_REGISTRY_TOKEN \
+          for name in TAP_TOKEN AUR_SSH_PRIVATE_KEY \
                       AUR_SSH_KNOWN_HOSTS HOMEBREW_TAP_REPO AUR_PACKAGE_NAME; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::RL2001 release value is missing or empty: $name"
@@ -187,16 +191,17 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the crates.io token
-        run: |
-          set -euo pipefail
-          status=$(curl --silent --output /dev/null --write-out '%{http_code}' \
-            --header "Authorization: ${CARGO_REGISTRY_TOKEN}" \
-            https://crates.io/api/v1/me)
-          if [[ "$status" != 200 ]]; then
-            echo "::error::RL2030 crates.io rejected CARGO_REGISTRY_TOKEN (HTTP $status)"
-            exit 1
-          fi
+      # Minting a token is the entire credential check for crates.io. It proves
+      # the OIDC exchange and the trusted publisher entry, it mutates nothing,
+      # and the token it returns is discarded here.
+      #
+      # It replaces a probe of /api/v1/me that could never have worked. crates.io
+      # answers 403 to a request whose User-Agent is curl's default, so that
+      # probe failed for every token, and src/auth.rs of crates.io rejects any
+      # token carrying endpoint scopes on an endpoint that declares none, so a
+      # token scoped to publish-update could not have passed it either.
+      - name: Verify that crates.io issues a token
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
 
   build:
     name: Build ${{ matrix.target }}
@@ -735,7 +740,22 @@ jobs:
 
   stage:
     name: Stage the prerelease
-    needs: [metadata, candidate, homebrew-qualify, aur-qualify]
+    needs: [metadata, preflight, candidate, homebrew-qualify, aur-qualify]
+    # preflight is deliberately skipped for a prerelease, and a skipped
+    # dependency would skip this job too, so the condition is spelled out
+    # instead of relying on the default. Every other dependency must have
+    # succeeded, preflight must have succeeded or been skipped.
+    #
+    # Without this dependency a credential failure still published the release,
+    # because staging did not wait for preflight. The retry then hit RL7001,
+    # since the release was no longer a draft, and the tag cannot be moved.
+    if: >-
+      !cancelled()
+      && needs.metadata.result == 'success'
+      && needs.candidate.result == 'success'
+      && needs.homebrew-qualify.result == 'success'
+      && needs.aur-qualify.result == 'success'
+      && (needs.preflight.result == 'success' || needs.preflight.result == 'skipped')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -979,18 +999,24 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     environment: release
+    permissions:
+      contents: read
+      id-token: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0
       - run: rustup show
+      - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
+        id: auth
       # Publishing to crates.io cannot be undone, only yanked, so it runs last:
       # every reversible channel has already been published and verified. A
       # failed publish is never retried with the same version; the repair is a
       # patch release.
       - name: Publish
         env:
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # Short lived, minted above by the trusted publisher exchange.
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish --workspace --locked
 
       - name: Verify the published version
