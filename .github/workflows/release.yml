@@ -267,8 +267,19 @@ jobs:
               echo "::error::RL3010 the binary links against a non-system path"
               exit 1
             fi
+          elif [[ "$TARGET" == *musl* ]]; then
+            # ldd exits non-zero on a static binary by design. Assert that it
+            # says so, rather than ignoring the exit status: a blanket `|| true`
+            # would also swallow a real ldd failure and then find nothing to
+            # complain about, so the check would pass without checking.
+            out=$(ldd "$binary" 2>&1 || true)
+            printf '%s\n' "$out"
+            if ! grep -Eq 'not a dynamic executable|statically linked' <<<"$out"; then
+              echo "::error::RL3012 ldd did not report ${binary} as static; its output is above"
+              exit 1
+            fi
           else
-            ldd "$binary" 2>&1 | tee "$RUNNER_TEMP/linkage.txt" || true
+            ldd "$binary" | tee "$RUNNER_TEMP/linkage.txt"
             if grep -Fq 'not found' "$RUNNER_TEMP/linkage.txt"; then
               echo "::error::RL3011 the binary has an unresolved dynamic dependency"
               exit 1
