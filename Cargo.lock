@@ -491,7 +491,7 @@ dependencies = [
 
 [[package]]
 name = "png2lvgl"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "built",
  "chrono",
