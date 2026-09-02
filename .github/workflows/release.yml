@@ -229,6 +229,10 @@ jobs:
 
       - name: Install Linux prerequisites
         if: matrix.container != ''
+        # Inside a container Actions defaults to `sh -e`, not `bash`, because it
+        # cannot assume the image ships bash. Debian's dash rejects
+        # `set -o pipefail`, so without this the step dies before apt runs.
+        shell: bash
         run: |
           set -euo pipefail
           apt-get update
@@ -655,6 +659,9 @@ jobs:
     timeout-minutes: 45
     steps:
       - name: Install Arch build prerequisites
+        # Named for the same reason as the Debian step above: a container job
+        # gets `sh -e` unless the shell is stated.
+        shell: bash
         run: pacman -Syu --noconfirm --needed git rust
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
