@@ -66,7 +66,11 @@ impl Args {
 }
 
 fn main() -> Result<()> {
+    // Diagnostics go to stderr, never to stdout. With `--stdout` the generated
+    // C is written there, and a subscriber writing to the same stream put its
+    // own lines, escape sequences included, at the top of the user's C file.
     tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
