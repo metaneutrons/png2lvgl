@@ -184,7 +184,11 @@ fn pack_pixels_msb(
     bpp: u8,
     pixel_value: impl Fn(u32, u32) -> u8,
 ) -> Vec<u8> {
-    let mask = (1u8 << bpp) - 1;
+    // Derived by shifting down, not up: `1u8 << 8` overflows, which made the
+    // mask 0 in a release build, so every 8 bpp pixel packed to zero, while a
+    // debug build panicked outright. Shifting `u8::MAX` down is exact for every
+    // bpp from 1 to 8.
+    let mask = u8::MAX >> (BITS_PER_BYTE - bpp);
     let mut data = Vec::new();
 
     for y in 0..height {
@@ -337,11 +341,10 @@ fn write_alpha<W: Write>(
 
     write_array_open(writer, var_name)?;
 
-    let data = if bpp == BITS_PER_BYTE {
-        gray.pixels().map(|p| p[0]).collect()
-    } else {
-        pack_pixels_msb(width, height, bpp, |x, y| gray.get_pixel(x, y)[0])
-    };
+    // No special case for 8 bpp any more. It existed only to route around the
+    // overflowing mask above, and it hid the defect from the alpha formats
+    // while the indexed ones ran into it.
+    let data = pack_pixels_msb(width, height, bpp, |x, y| gray.get_pixel(x, y)[0]);
 
     write_data_array(writer, &data)?;
     writeln!(writer, "}};\n")?;
@@ -424,9 +427,9 @@ fn write_descriptor<W: Write>(
 
 #[cfg(test)]
 mod tests {
-    use image::{DynamicImage, Rgb, RgbImage, Rgba, RgbaImage};
+    use image::{DynamicImage, GrayImage, Luma, Rgb, RgbImage, Rgba, RgbaImage};
 
-    use super::{ColorFormat, GenerateParams, LvglVersion, built_info, generate};
+    use super::{ColorFormat, GenerateParams, LvglVersion, built_info, generate, pack_pixels_msb};
 
     fn solid_rgb(width: u32, height: u32, color: [u8; 3]) -> DynamicImage {
         let mut img = RgbImage::new(width, height);
@@ -614,5 +617,64 @@ mod tests {
                 "file does not end with a declaration"
             );
         }
+    }
+
+    fn luma_row(values: &[u8]) -> DynamicImage {
+        #[allow(clippy::cast_possible_truncation)]
+        let width = values.len() as u32;
+        DynamicImage::ImageLuma8(GrayImage::from_fn(width, 1, |x, _| {
+            Luma([values[x as usize]])
+        }))
+    }
+
+    /// `1u8 << 8` overflows. The mask therefore came out as 0 in a release
+    /// build, so every 8 bpp pixel packed to zero, and a debug build panicked
+    /// instead. Only the indexed path reached this: the alpha path used to
+    /// route around it with a special case of its own.
+    #[test]
+    fn eight_bits_per_pixel_pass_through_unchanged() {
+        let values = [50u8, 100, 150, 200];
+        let packed = pack_pixels_msb(4, 1, 8, |x, _| values[x as usize]);
+        assert_eq!(packed, values, "8 bpp must not alter the pixel");
+    }
+
+    /// The mask is now derived by shifting down. Guard that this still packs
+    /// several pixels per byte for the sub-byte depths.
+    #[test]
+    fn four_bits_per_pixel_pack_two_to_a_byte() {
+        let packed = pack_pixels_msb(2, 1, 4, |x, _| if x == 0 { 0xA0 } else { 0xB0 });
+        assert_eq!(
+            packed,
+            [0xAB],
+            "two 4 bpp pixels share one byte, high one first"
+        );
+    }
+
+    /// Each row starts on a byte boundary, so a row that does not fill its last
+    /// byte is flushed with the remaining bits left at zero.
+    #[test]
+    fn a_partial_row_is_flushed() {
+        let packed = pack_pixels_msb(3, 1, 2, |_, _| 0xC0);
+        assert_eq!(
+            packed,
+            [0b1111_1100],
+            "three 2 bpp pixels fill six bits; the remaining two stay zero"
+        );
+    }
+
+    /// The whole point, seen from outside: indexed8 used to emit an all-zero
+    /// data array, which renders as a black image.
+    #[test]
+    fn indexed8_writes_the_pixel_values() {
+        let text = render(
+            &luma_row(&[50, 100, 150, 200]),
+            &ColorFormat::Indexed8,
+            LvglVersion::V9,
+            false,
+        );
+        assert!(
+            text.contains("0x32, 0x64, 0x96, 0xc8,"),
+            "indexed8 lost the pixel values:\n{text}"
+        );
     }
 }
