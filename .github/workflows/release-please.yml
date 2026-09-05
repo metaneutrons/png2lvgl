@@ -46,11 +46,14 @@ jobs:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         id: app-token
         with:
-          # The app id is public information, so it is a variable rather
+          # The client id is public information, so it is a variable rather
           # than a secret: the standard's own rule is that values which are
           # not secret must not be secrets, because a secret cannot be shown
           # in an error message and makes every check blind.
-          app-id: ${{ vars.RELEASE_PLEASE_APP_ID }}
+          #
+          # `client-id`, not `app-id`. The action deprecates the latter, and the
+          # two carry different values rather than two names for one thing.
+          client-id: ${{ vars.RELEASE_PLEASE_CLIENT_ID }}
           private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
 
       - uses: googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5
