@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.12](https://github.com/metaneutrons/png2lvgl/compare/v0.3.11...v0.3.12) (2026-09-05)
+
+
+### Bug Fixes
+
+* keep the pixel values in the indexed8 format ([#105](https://github.com/metaneutrons/png2lvgl/issues/105)) ([b43604c](https://github.com/metaneutrons/png2lvgl/commit/b43604c8bec1248b805c7274cc9222fdf705070c))
+* write diagnostics to stderr so --stdout emits only C ([#106](https://github.com/metaneutrons/png2lvgl/issues/106)) ([6774cc6](https://github.com/metaneutrons/png2lvgl/commit/6774cc6824d483f3402791e459355279ae84dc7a))
+
 ## [0.3.11](https://github.com/metaneutrons/png2lvgl/compare/v0.3.10...v0.3.11) (2026-09-02)
 
 
