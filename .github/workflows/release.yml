@@ -1238,7 +1238,13 @@ jobs:
     environment: release
     env:
       ARCHIVE_REPO: metaneutrons/apt-archive
-      ARCHIVE_DOMAIN: deb.metaneutrons.cc
+      # Two different names for the same archive, and the dispatch takes the
+      # first: `domain` is a choice input listing the manifest directories
+      # under domains/, while the host only appears inside that manifest and in
+      # the public URL. Passing the host is rejected with HTTP 422 before any
+      # run starts.
+      ARCHIVE_DOMAIN: metaneutrons.cc
+      ARCHIVE_HOST: deb.metaneutrons.cc
       ARCHIVE_PROJECT: png2lvgl
       VERSION: ${{ needs.metadata.outputs.version }}
     steps:
@@ -1305,7 +1311,7 @@ jobs:
       - name: Verify what the archive serves, along the client's path
         run: |
           set -euo pipefail
-          base="https://${ARCHIVE_DOMAIN}"
+          base="https://${ARCHIVE_HOST}"
           curl --fail --silent --show-error --location \
             "${base}/dists/rolling/InRelease" -o "$RUNNER_TEMP/InRelease"
           for arch in amd64 arm64; do
