@@ -120,17 +120,17 @@ jobs:
       # identity token of its own.
       id-token: write
     env:
-      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
       AUR_SSH_KNOWN_HOSTS: ${{ vars.AUR_SSH_KNOWN_HOSTS }}
       HOMEBREW_TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
+      HOMEBREW_APP_CLIENT_ID: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
       AUR_PACKAGE_NAME: ${{ vars.AUR_PACKAGE_NAME }}
     steps:
       - name: Require every credential and variable
         run: |
           set -euo pipefail
-          for name in TAP_TOKEN AUR_SSH_PRIVATE_KEY \
-                      AUR_SSH_KNOWN_HOSTS HOMEBREW_TAP_REPO AUR_PACKAGE_NAME; do
+          for name in AUR_SSH_PRIVATE_KEY AUR_SSH_KNOWN_HOSTS \
+                      HOMEBREW_TAP_REPO HOMEBREW_APP_CLIENT_ID AUR_PACKAGE_NAME; do
             if [[ -z "${!name:-}" ]]; then
               echo "::error::RL2001 release value is missing or empty: $name"
               exit 1
@@ -141,30 +141,49 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the tap token can write and open pull requests
-        env:
-          GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+      # RL2002 above guarantees the shape owner/homebrew-tap, so splitting it
+      # here is safe and keeps the tap owner out of the workflow: a project
+      # belonging to an organisation publishes into that organisation's tap,
+      # which is not necessarily this repository's owner.
+      - name: Split the tap coordinates
+        id: tap
         run: |
           set -euo pipefail
-          push=$(gh api "repos/${HOMEBREW_TAP_REPO}" --jq '.permissions.push')
-          if [[ "$push" != true ]]; then
-            echo "::error::RL2010 HOMEBREW_TAP_TOKEN cannot write to ${HOMEBREW_TAP_REPO}"
-            exit 1
-          fi
-          # A pull request from main to main can never be created, so this
-          # probes the permission without any side effect. With the permission
-          # GitHub answers 422 "No commits between main and main"; without it,
-          # "Resource not accessible by personal access token".
-          probe=$(gh api -X POST "repos/${HOMEBREW_TAP_REPO}/pulls" \
-            -f head=main -f base=main -f title='permission probe' 2>&1 || true)
-          if grep -qi 'Resource not accessible' <<<"$probe"; then
-            echo "::error::RL2011 HOMEBREW_TAP_TOKEN cannot open pull requests on ${HOMEBREW_TAP_REPO}."
-            echo "::error::Add the 'Pull requests: Read and write' repository permission to the token."
-            exit 1
-          fi
-          if ! grep -q 'No commits between' <<<"$probe"; then
-            echo "::error::RL2012 unexpected pull-request probe response"
-            printf '%s\n' "$probe"
+          echo "owner=${HOMEBREW_TAP_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "repo=${HOMEBREW_TAP_REPO##*/}" >> "$GITHUB_OUTPUT"
+
+      # Minting is the check. The action asks the installation for exactly the
+      # permissions named here, and issuance fails when the installation does
+      # not hold them, so a missing grant surfaces now rather than half way
+      # through a tap mutation.
+      #
+      # This replaces a probe that needed a stored PAT and read
+      # `permissions.push` from the repository response. That field describes
+      # the calling user's role, not the grant actually issued, so it could
+      # report write for a token that had none.
+      - name: Verify that the tap app issues a scoped token
+        id: tap-probe
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: ${{ steps.tap.outputs.owner }}
+          repositories: ${{ steps.tap.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-statuses: read
+
+      - name: Verify the issued token reaches the tap and nothing else
+        env:
+          GH_TOKEN: ${{ steps.tap-probe.outputs.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t reach < <(gh api /installation/repositories \
+            --jq '.repositories[].full_name' | sort)
+          printf 'the token reaches: %s\n' "${reach[*]:-nothing}"
+          if [[ ${#reach[@]} -ne 1 || "${reach[0]}" != "$HOMEBREW_TAP_REPO" ]]; then
+            echo "::error::RL2010 the tap token reaches ${#reach[@]} repositories, expected only ${HOMEBREW_TAP_REPO}"
             exit 1
           fi
 
@@ -885,8 +904,6 @@ jobs:
     timeout-minutes: 180
     environment: release
     env:
-      GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
       TAP_REPO: ${{ vars.HOMEBREW_TAP_REPO }}
       VERSION: ${{ needs.metadata.outputs.version }}
       TAG: ${{ needs.metadata.outputs.tag }}
@@ -896,9 +913,64 @@ jobs:
           name: release-candidate
           path: candidate
 
+      - name: Split the tap coordinates
+        id: tap
+        run: |
+          set -euo pipefail
+          echo "owner=${TAP_REPO%%/*}" >> "$GITHUB_OUTPUT"
+          echo "repo=${TAP_REPO##*/}" >> "$GITHUB_OUTPUT"
+
+      # An installation token lives one hour. The mutation below fits inside
+      # that; the qualification wait afterwards does not, so the merge mints a
+      # second one rather than stretching this one. Both are revoked when the
+      # job ends, which is the action's default.
+      - name: Mint a tap token for the pull request
+        id: token-open
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: ${{ steps.tap.outputs.owner }}
+          repositories: ${{ steps.tap.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-statuses: read
+
+      - name: Verify the token and measure the identity the tap will see
+        id: bot
+        env:
+          GH_TOKEN: ${{ steps.token-open.outputs.token }}
+          APP_SLUG: ${{ steps.token-open.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          mapfile -t reach < <(gh api /installation/repositories \
+            --jq '.repositories[].full_name' | sort)
+          printf 'the token reaches: %s\n' "${reach[*]:-nothing}"
+          if [[ ${#reach[@]} -ne 1 || "${reach[0]}" != "$TAP_REPO" ]]; then
+            echo "::error::RL8002 the tap token reaches ${#reach[@]} repositories, expected only ${TAP_REPO}"
+            exit 1
+          fi
+          # The bot's own public user record. An installation token has no
+          # personal user behind it, so /user would answer about nobody.
+          login="${APP_SLUG}[bot]"
+          id=$(gh api "/users/${login}" --jq .id)
+          if [[ -z "$id" || "$id" == null ]]; then
+            echo "::error::RL8003 no public user record for ${login}"
+            exit 1
+          fi
+          echo "login=$login" >> "$GITHUB_OUTPUT"
+          echo "email=${id}+${login}@users.noreply.github.com" >> "$GITHUB_OUTPUT"
+          printf 'authoring as %s <%s+%s@users.noreply.github.com>\n' "$login" "$id" "$login"
+
       - name: Open a formula update pull request
         id: update
         shell: bash
+        env:
+          GH_TOKEN: ${{ steps.token-open.outputs.token }}
+          TAP_TOKEN: ${{ steps.token-open.outputs.token }}
+          BOT_LOGIN: ${{ steps.bot.outputs.login }}
+          BOT_EMAIL: ${{ steps.bot.outputs.email }}
         run: |
           set -euo pipefail
           source_formula="${GITHUB_WORKSPACE}/candidate/png2lvgl.rb"
@@ -915,8 +987,8 @@ jobs:
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
           git switch -c "$branch"
           install -m 0644 "$source_formula" Formula/png2lvgl.rb
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git config user.name "$BOT_LOGIN"
+          git config user.email "$BOT_EMAIL"
           git add Formula/png2lvgl.rb
           # The tap fails closed if README.md does not match its formulas.
           if [[ -x scripts/generate-readme.sh ]]; then
@@ -929,18 +1001,24 @@ jobs:
             --title "png2lvgl ${VERSION}" \
             --body "Automated update from the verified ${TAG} prerelease assets. The stable release stays blocked until every tap qualification lane passes.")
           echo "pr=$pr" >> "$GITHUB_OUTPUT"
+          # Recorded so the merge step can prove nothing was pushed onto the
+          # branch while the qualification ran.
+          head=$(gh pr view "$pr" --repo "$TAP_REPO" --json headRefOid --jq .headRefOid)
+          echo "head=$head" >> "$GITHUB_OUTPUT"
 
       # A branch pushed without a pull request is unreachable and, because the
       # branch name carries the run id, blocks a re-run of this very job.
       - name: Remove an orphaned branch from the tap
         if: failure() && steps.update.outputs.branch != '' && steps.update.outputs.pr == ''
         env:
+          GH_TOKEN: ${{ steps.token-open.outputs.token }}
           BRANCH: ${{ steps.update.outputs.branch }}
         run: gh api -X DELETE "repos/${TAP_REPO}/git/refs/heads/${BRANCH}"
 
-      - name: Require tap qualification, then merge
+      - name: Require tap qualification
         if: steps.update.outputs.pr != ''
         env:
+          GH_TOKEN: ${{ steps.token-open.outputs.token }}
           PR: ${{ steps.update.outputs.pr }}
         run: |
           set -euo pipefail
@@ -954,10 +1032,54 @@ jobs:
             fi
             sleep 10
           done
-          gh pr checks "$PR" --repo "$TAP_REPO" --watch --fail-fast --interval 20
+          # Bounded well inside the token's hour, so a stalled tap lane fails
+          # here with a clear message instead of on an expired credential.
+          timeout 45m gh pr checks "$PR" --repo "$TAP_REPO" \
+            --watch --fail-fast --interval 20
+
+      # The wait above may have consumed most of the first token's life, so the
+      # merge uses a fresh one.
+      - name: Mint a tap token for the merge
+        id: token-merge
+        if: steps.update.outputs.pr != ''
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: ${{ steps.tap.outputs.owner }}
+          repositories: ${{ steps.tap.outputs.repo }}
+          permission-contents: write
+          permission-pull-requests: write
+          permission-checks: read
+          permission-statuses: read
+
+      - name: Recheck the head and the gate, then merge
+        if: steps.update.outputs.pr != ''
+        env:
+          GH_TOKEN: ${{ steps.token-merge.outputs.token }}
+          PR: ${{ steps.update.outputs.pr }}
+          EXPECTED_HEAD: ${{ steps.update.outputs.head }}
+        run: |
+          set -euo pipefail
+          head=$(gh pr view "$PR" --repo "$TAP_REPO" --json headRefOid --jq .headRefOid)
+          if [[ "$head" != "$EXPECTED_HEAD" ]]; then
+            echo "::error::RL8004 the pull request head moved from ${EXPECTED_HEAD} to ${head} during qualification"
+            exit 1
+          fi
+          # The qualification proved the checks on this head. Merging is only
+          # safe while the tap still enforces them, so an emptied gate is an
+          # abort rather than a convenience.
+          rules=$(gh api "repos/${TAP_REPO}/rules/branches/main" --jq 'length')
+          if [[ "$rules" -eq 0 ]]; then
+            echo "::error::RL8005 no rule applies to main of ${TAP_REPO}; refusing to merge into an unguarded branch"
+            exit 1
+          fi
+          printf 'main of %s is covered by %s rules\n' "$TAP_REPO" "$rules"
           gh pr merge "$PR" --repo "$TAP_REPO" --squash --delete-branch
 
       - name: Verify the formula now on protected main
+        env:
+          GH_TOKEN: ${{ steps.token-merge.outputs.token || steps.token-open.outputs.token }}
         run: |
           set -euo pipefail
           gh api "repos/${TAP_REPO}/contents/Formula/png2lvgl.rb?ref=main" \
