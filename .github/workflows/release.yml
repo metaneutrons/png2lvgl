@@ -1216,3 +1216,144 @@ jobs:
         run: |
           set -euo pipefail
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --prerelease=false --latest
+
+  # Stage 10. Not a channel this project publishes to: it holds neither the
+  # archive's signing key nor bucket access, it only attaches attested payloads
+  # and tells the archive they are ready. That is why this sits after `promote`
+  # and not among the channels. The archive reads stable releases only, so a
+  # knock in stage 8 would ask for something that cannot exist yet, the archive
+  # would abort with AR170, and `promote` would wait for the very channel it
+  # blocks.
+  #
+  # A failure here cannot un-promote anything and does not need to: the archive
+  # keeps serving the previous version until the dispatch is repeated. It is
+  # reported rather than swallowed, because an unrepaired one is a doctor
+  # finding.
+  archive-dispatch:
+    name: Hand the release to the APT archive
+    needs: [metadata, promote]
+    if: needs.metadata.outputs.is_prerelease == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: release
+    env:
+      ARCHIVE_REPO: metaneutrons/apt-archive
+      ARCHIVE_DOMAIN: deb.metaneutrons.cc
+      ARCHIVE_PROJECT: png2lvgl
+      VERSION: ${{ needs.metadata.outputs.version }}
+    steps:
+      - name: Mint a token for the archive alone
+        id: token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.ARCHIVE_DISPATCH_CLIENT_ID }}
+          private-key: ${{ secrets.ARCHIVE_DISPATCH_PRIVATE_KEY }}
+          owner: metaneutrons
+          repositories: apt-archive
+          permission-actions: write
+          permission-contents: read
+
+      - name: Verify the token reaches the archive and nothing else
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          mapfile -t reach < <(gh api /installation/repositories \
+            --jq '.repositories[].full_name' | sort)
+          printf 'the token reaches: %s\n' "${reach[*]:-nothing}"
+          if [[ ${#reach[@]} -ne 1 || "${reach[0]}" != "$ARCHIVE_REPO" ]]; then
+            echo "::error::RL9001 the dispatch token reaches ${#reach[@]} repositories, expected only ${ARCHIVE_REPO}"
+            exit 1
+          fi
+
+      - name: Knock, and observe the run it starts
+        id: knock
+        env:
+          GH_TOKEN: ${{ steps.token.outputs.token }}
+        run: |
+          set -euo pipefail
+          branch=$(gh api "repos/${ARCHIVE_REPO}" --jq .default_branch)
+          before=$(gh run list --repo "$ARCHIVE_REPO" --workflow=publish.yml \
+            --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+          gh workflow run publish.yml --repo "$ARCHIVE_REPO" --ref "$branch" \
+            -f domain="$ARCHIVE_DOMAIN" -f project="$ARCHIVE_PROJECT"
+          # Never correlate by simply taking the newest run: another domain may
+          # publish at the same moment. Wait for an id that did not exist before
+          # the knock and hold on to exactly that one.
+          run_id=0
+          for _ in {1..24}; do
+            sleep 5
+            candidate=$(gh run list --repo "$ARCHIVE_REPO" --workflow=publish.yml \
+              --limit 1 --json databaseId --jq '.[0].databaseId // 0')
+            if [[ "$candidate" != "$before" ]]; then run_id="$candidate"; break; fi
+          done
+          if [[ "$run_id" == 0 ]]; then
+            echo "::error::RL9002 the dispatch produced no run within 120s"
+            exit 1
+          fi
+          printf 'archive run %s\n' "$run_id"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          gh run watch "$run_id" --repo "$ARCHIVE_REPO" --exit-status --interval 20
+
+      # A green archive run is not proof that the archive serves this version.
+      # Take the route a client with Acquire-By-Hash takes: InRelease is the
+      # commit point and is served uncached, the Packages index behind it is
+      # content addressed and therefore cannot go stale. Polling
+      # binary-<arch>/Packages.gz instead reads a mutable path that a CDN caches;
+      # measured on this domain at max-age=14400, which is long enough to fail a
+      # publication that succeeded.
+      - name: Verify what the archive serves, along the client's path
+        run: |
+          set -euo pipefail
+          base="https://${ARCHIVE_DOMAIN}"
+          curl --fail --silent --show-error --location \
+            "${base}/dists/rolling/InRelease" -o "$RUNNER_TEMP/InRelease"
+          for arch in amd64 arm64; do
+            want="main/binary-${arch}/Packages.gz"
+            digest=$(ARCH_PATH="$want" python3 - "$RUNNER_TEMP/InRelease" <<'PY'
+          import re, sys, os
+          want = os.environ["ARCH_PATH"]
+          # The block ends at the first unindented line. A terminator of
+          # ^[A-Za-z-]+: misses SHA512: and SHA256:, because the class has no
+          # digits, and every later section is then read as part of this one.
+          field = re.compile(r"^[A-Za-z][A-Za-z0-9-]*:")
+          inside = False
+          for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+              if field.match(line):
+                  inside = line.startswith("SHA512:")
+                  continue
+              if not inside or not line.startswith(" "):
+                  continue
+              parts = line.split()
+              if len(parts) == 3 and parts[2] == want:
+                  print(parts[0])
+                  break
+          PY
+          )
+            if [[ -z "$digest" ]]; then
+              echo "::error::RL9003 InRelease carries no SHA512 entry for ${want}"
+              exit 1
+            fi
+            # apt asks for SHA512 first. Asking for it too turns a silent
+            # fallback to a weaker digest into a failed release job.
+            # Two by-hash directories exist and they are not interchangeable:
+            # dists/<suite>/by-hash carries the archive state, the package
+            # indices live under the component and architecture. Asking the
+            # first for an index digest answers 404.
+            curl --fail --silent --show-error --location \
+              "${base}/dists/rolling/main/binary-${arch}/by-hash/SHA512/${digest}" \
+              -o "$RUNNER_TEMP/Packages.gz"
+            measured=$(sha512sum "$RUNNER_TEMP/Packages.gz" | cut -d' ' -f1)
+            if [[ "$measured" != "$digest" ]]; then
+              echo "::error::RL9004 by-hash object for ${want} does not match its own name"
+              exit 1
+            fi
+            # Content addressing says what the object should be, not what the
+            # archive put there, hence the comparison above before this one.
+            if ! gzip -dc "$RUNNER_TEMP/Packages.gz" \
+                 | grep -Fqx "Version: ${VERSION}-1"; then
+              echo "::error::RL9005 the ${arch} index does not carry ${ARCHIVE_PROJECT} ${VERSION}-1"
+              exit 1
+            fi
+            printf 'the %s index carries %s %s-1\n' "$arch" "$ARCHIVE_PROJECT" "$VERSION"
+          done
