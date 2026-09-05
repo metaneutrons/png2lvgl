@@ -1039,9 +1039,12 @@ jobs:
 
       # The wait above may have consumed most of the first token's life, so the
       # merge uses a fresh one.
+      # Minted unconditionally. With an `if:` here the read-back below needed a
+      # fallback expression, and a credential whose origin only a reader can
+      # resolve is not a demonstrated origin. The unused token in the
+      # no-change case costs one request and is revoked with the others.
       - name: Mint a tap token for the merge
         id: token-merge
-        if: steps.update.outputs.pr != ''
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         with:
           client-id: ${{ vars.HOMEBREW_APP_CLIENT_ID }}
@@ -1079,7 +1082,7 @@ jobs:
 
       - name: Verify the formula now on protected main
         env:
-          GH_TOKEN: ${{ steps.token-merge.outputs.token || steps.token-open.outputs.token }}
+          GH_TOKEN: ${{ steps.token-merge.outputs.token }}
         run: |
           set -euo pipefail
           gh api "repos/${TAP_REPO}/contents/Formula/png2lvgl.rb?ref=main" \
