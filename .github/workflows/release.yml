@@ -1072,12 +1072,26 @@ jobs:
           # The qualification proved the checks on this head. Merging is only
           # safe while the tap still enforces them, so an emptied gate is an
           # abort rather than a convenience.
-          rules=$(gh api "repos/${TAP_REPO}/rules/branches/main" --jq 'length')
-          if [[ "$rules" -eq 0 ]]; then
-            echo "::error::RL8005 no rule applies to main of ${TAP_REPO}; refusing to merge into an unguarded branch"
+          #
+          # GitHub guards a branch through two independent mechanisms, and
+          # `repos/OWNER/REPO/rules/branches/main` reports only rulesets. The tap
+          # guards main with classic branch protection, so that endpoint answers
+          # an empty list there even for a fully privileged caller, and reading
+          # it alone called a protected branch unguarded. The branch endpoint
+          # answers for both mechanisms, returns 200 whether or not the branch is
+          # guarded, and needs no permission beyond the ones minted above, unlike
+          # `branches/main/protection`, which requires `administration: read`.
+          branch=$(gh api "repos/${TAP_REPO}/branches/main")
+          if [[ "$(printf '%s' "$branch" | jq -r '.protected')" != "true" ]]; then
+            echo "::error::RL8005 main of ${TAP_REPO} is not protected; refusing to merge into an unguarded branch"
             exit 1
           fi
-          printf 'main of %s is covered by %s rules\n' "$TAP_REPO" "$rules"
+          # A ruleset does not surface its required checks here, so the count is
+          # reported only for the mechanism that carries it.
+          printf 'main of %s is protected by %s\n' "$TAP_REPO" "$(printf '%s' "$branch" | jq -r '
+            if .protection.enabled
+            then "classic branch protection with \(.protection.required_status_checks.contexts // [] | length) required checks"
+            else "a repository ruleset" end')"
           gh pr merge "$PR" --repo "$TAP_REPO" --squash --delete-branch
 
       - name: Verify the formula now on protected main
