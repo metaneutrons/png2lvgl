@@ -18,9 +18,57 @@ env:
   RUST_BACKTRACE: '1'
 
 jobs:
+  changes:
+    name: Relevante Änderungen erkennen
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          # Der Basis-Commit muss vorhanden sein; eine flache Kopie hat ihn nicht
+          # und der Vergleich unten schlüge fehl.
+          fetch-depth: 0
+      - name: Hat sich etwas außerhalb der Dokumentation geändert?
+        id: filter
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          # Auf main und bei einem Dispatch gibt es keine sinnvolle Basis, und
+          # main muss geprüft bleiben. Dort läuft immer alles.
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            echo 'code=true' >> "$GITHUB_OUTPUT"
+            echo 'Kein Pull Request: alle Bahnen laufen'
+            exit 0
+          fi
+          if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            echo "::error::Basis-Commit ${BASE} nicht im Klon vorhanden"
+            exit 1
+          fi
+          # Der Filter benennt, was Dokumentation ist. Alles andere gilt als
+          # Code, damit ein Pfad, an den niemand gedacht hat, geprüft wird und
+          # nicht stillschweigend durchfällt.
+          docs='(^docs/|^\.github/ISSUE_TEMPLATE/|^\.github/pull_request_template\.md$|^LICENSE$|\.md$)'
+          code=false
+          while IFS= read -r file; do
+            [[ -z "$file" ]] && continue
+            if [[ ! "$file" =~ $docs ]]; then
+              printf 'Code betroffen durch: %s\n' "$file"
+              code=true
+              break
+            fi
+          done < <(git diff --name-only "$BASE" HEAD)
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [[ "$code" == false ]]; then
+            echo 'Nur Dokumentation: Format, Tests und MSRV werden übersprungen'
+          fi
+
   quality:
     name: Format, Clippy, Lizenzen
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       # Kein dtolnay/rust-toolchain: die Version steht in rust-toolchain.toml
@@ -48,6 +96,8 @@ jobs:
 
   test:
     name: Tests (${{ matrix.name }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -74,6 +124,8 @@ jobs:
   msrv:
     name: MSRV 1.88
     runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - run: rustup toolchain install 1.88 --profile minimal
@@ -160,7 +212,7 @@ jobs:
   ci-success:
     name: CI Success
     if: always()
-    needs: [quality, test, msrv, secrets, commit-hygiene]
+    needs: [changes, quality, test, msrv, secrets, commit-hygiene]
     runs-on: ubuntu-24.04
     steps:
       - name: Jeder vorangehende Job muss erfolgreich oder übersprungen sein
