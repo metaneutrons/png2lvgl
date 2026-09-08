@@ -2,7 +2,7 @@
 name = "png2lvgl"
 version = "0.3.12"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.94.1"
 authors = ["metaneutrons"]
 license = "GPL-3.0-or-later"
 description = "Convert PNG images to LVGL C arrays"

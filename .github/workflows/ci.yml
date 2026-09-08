@@ -122,18 +122,18 @@ jobs:
   # png2lvgl wird auf crates.io veröffentlicht, deshalb ist rust-version in
   # Cargo.toml eine Zusage an Konsumenten und braucht einen eigenen Testlauf.
   msrv:
-    name: MSRV 1.88
+    name: MSRV 1.94.1
     runs-on: ubuntu-24.04
     needs: changes
     if: needs.changes.outputs.code == 'true'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - run: rustup toolchain install 1.88 --profile minimal
+      - run: rustup toolchain install 1.94.1 --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       # rust-toolchain.toml überschreibt die rustup-Auswahl, ein blankes cargo
       # würde hier also 1.98 prüfen und nichts beweisen. Nur ein ausdrückliches
       # +toolchain schlägt die Datei.
-      - run: cargo +1.88 check --all-features --locked
+      - run: cargo +1.94.1 check --all-features --locked
 
   commit-hygiene:
     name: Commit-Hygiene
