@@ -16,12 +16,6 @@ Convert PNG images to LVGL C arrays with support for multiple color formats.
 
 ## Installation
 
-### Cargo (Recommended)
-
-```bash
-cargo install png2lvgl
-```
-
 ### Homebrew (macOS)
 
 ```bash
@@ -38,14 +32,35 @@ brew install png2lvgl
 yay -S png2lvgl
 ```
 
-### Debian and Ubuntu
+### Debian and Ubuntu (APT)
 
-Download the `.deb` matching your architecture from the
-[latest release](https://github.com/metaneutrons/png2lvgl/releases/latest) and install it:
+Packages for amd64 and arm64 come from `deb.metaneutrons.cc`. Check the key
+before you trust it:
 
 ```bash
-sudo dpkg -i png2lvgl_*_amd64.deb
+curl -fsSL https://deb.metaneutrons.cc/metaneutrons-archive-keyring.pgp \
+  -o /tmp/metaneutrons-archive-keyring.pgp
+gpg --show-keys --with-colons /tmp/metaneutrons-archive-keyring.pgp \
+  | awk -F: '$1 == "fpr" { print $10; exit }'
+# Expected: 1B7B79417383648BBFBE282E01AB8296EF0FCD76
 ```
+
+That is the certifying primary key. It signs nothing itself; packages for this
+domain are signed by its subkey
+`A0C21782FC507CCBD666F3ED242072FEC8BE54A4`. Install once the fingerprint above
+matches:
+
+```bash
+sudo install -m 0644 /tmp/metaneutrons-archive-keyring.pgp \
+  /usr/share/keyrings/metaneutrons-archive-keyring.pgp
+echo "deb [signed-by=/usr/share/keyrings/metaneutrons-archive-keyring.pgp] https://deb.metaneutrons.cc rolling main" \
+  | sudo tee /etc/apt/sources.list.d/metaneutrons.list
+sudo apt update
+sudo apt install png2lvgl
+```
+
+Do not add `trusted=yes`. It disables exactly the check the fingerprint above is
+for. Upgrades then arrive with `apt upgrade` like any other package.
 
 ### Pre-built Binaries
 
@@ -59,11 +74,7 @@ sha256sum --check --ignore-missing SHA256SUMS
 gh attestation verify png2lvgl-*.tar.gz --repo metaneutrons/png2lvgl
 ```
 
-### From Source
-
-```bash
-cargo install --git https://github.com/metaneutrons/png2lvgl
-```
+See [Building from Source](#building-from-source) to build it yourself.
 
 ## Usage
 
@@ -164,7 +175,7 @@ const lv_img_dsc_t my_image = {
 ## Building from Source
 
 ```bash
-git clone https://github.com/metaneturons/png2lvgl
+git clone https://github.com/metaneutrons/png2lvgl
 cd png2lvgl
 cargo build --release
 ```
