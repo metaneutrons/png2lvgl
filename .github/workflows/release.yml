@@ -474,7 +474,7 @@ jobs:
           test -f "$room/share/man/man1/png2lvgl.1"
 
       - name: Generate the SBOM for the archive
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           file: dist/png2lvgl-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.${{ contains(matrix.target, 'windows') && 'zip' || 'tar.gz' }}
           format: spdx-json
@@ -483,7 +483,7 @@ jobs:
 
       - name: Generate the SBOM for the Debian package
         if: matrix.deb_arch != ''
-        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
           file: dist/png2lvgl_${{ needs.metadata.outputs.version }}-1_${{ matrix.deb_arch }}.deb
           format: spdx-json
@@ -681,7 +681,7 @@ jobs:
         with:
           name: release-candidate
           path: candidate
-      - uses: Homebrew/actions/setup-homebrew@3cdb78d0f62ad29dd32de765782654f4eedea607 # 2026.08.31.1
+      - uses: Homebrew/actions/setup-homebrew@e99025eb970cfa124b8284a35463d87426917478 # 2026.09.28.1
         with:
           core: false
           cask: false
