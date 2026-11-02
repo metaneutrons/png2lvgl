@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.13](https://github.com/metaneutrons/png2lvgl/compare/v0.3.12...v0.3.13) (2026-11-02)
+
+
+### Bug Fixes
+
+* **deps:** libz-sys auf 1.1.31 heben (RUSTSEC-2026-0418) ([#126](https://github.com/metaneutrons/png2lvgl/issues/126)) ([9d88fdf](https://github.com/metaneutrons/png2lvgl/commit/9d88fdf5f3e37f54213cdff0ea320c2744d5de34))
+
 ## [0.3.12](https://github.com/metaneutrons/png2lvgl/compare/v0.3.11...v0.3.12) (2026-09-05)
 
 
