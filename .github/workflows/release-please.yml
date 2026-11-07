@@ -43,7 +43,7 @@ jobs:
       # for events created with GITHUB_TOKEN as a recursion guard, so CI would
       # never run on the release pull request and its required checks would
       # never appear. An app token is a real actor and triggers CI.
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3
         id: app-token
         with:
           # The client id is public information, so it is a variable rather
