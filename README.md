@@ -16,6 +16,11 @@ Convert PNG images to LVGL C arrays with support for multiple color formats.
 
 ## Installation
 
+Pick the channel your system already trusts: Homebrew on macOS, the AUR on Arch,
+APT on Debian and Ubuntu. Each of them keeps png2lvgl up to date with the rest of
+the system. The pre-built binaries are for everything else, and for a machine
+where nothing should be installed system-wide.
+
 ### Homebrew (macOS)
 
 ```bash
