@@ -18,7 +18,7 @@ fn main() {
 
     let man = clap_mangen::Man::new(cmd)
         .section("1")
-        .date(chrono::Local::now().format("%Y-%m-%d").to_string())
+        .date(jiff::ZonedDateTime::now().date().to_string())
         .source(format!("png2lvgl {}", env!("CARGO_PKG_VERSION")));
 
     let mut buffer = Vec::new();
